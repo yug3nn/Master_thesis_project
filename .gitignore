@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.vscode/
+data/      # Se i file RAW sono pesanti, meglio tenerli fuori da Git
+*.log
