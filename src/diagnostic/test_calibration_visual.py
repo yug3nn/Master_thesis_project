@@ -3,14 +3,19 @@ import numpy as np
 import json
 import os
 import time
+import argparse # Aggiunto per gestire gli argomenti
 from metavision_core.event_io import EventsIterator
 
 # --- CONFIGURAZIONE ---
-JSON_FILE = "genx320_intrinsics.json"
 DELTA_T = 30000 
 
+SERIAL_LEFT = "genx320 11-003c"  
+SERIAL_RIGHT = "genx320 10-003c" 
+
 def load_calibration(filename):
-    with open(filename, 'r') as f:
+    # Costruisce il percorso verso la cartella config
+    filepath = os.path.join("config", filename)
+    with open(filepath, 'r') as f:
         data = json.load(f)
     K = np.array(data["K"]).reshape(3, 3)
     D = np.array(data["D"])
@@ -24,8 +29,6 @@ def create_displacement_heatmap(mapx, mapy, width, height):
     grid_x, grid_y = np.meshgrid(np.arange(width), np.arange(height))
     
     # Calcola la distanza tra dove il pixel ERA e dove è finito
-    # dx = mapx - x_originale
-    # dy = mapy - y_originale
     dx = mapx - grid_x.astype(np.float32)
     dy = mapy - grid_y.astype(np.float32)
     
@@ -39,18 +42,34 @@ def create_displacement_heatmap(mapx, mapy, width, height):
     print(f" - Spostamento medio: {np.mean(displacement):.2f} pixel")
     
     # Normalizza per visualizzare (0..255)
-    # Moltiplichiamo per un fattore per renderlo visibile anche se basso
     disp_vis = (displacement / max_disp * 255).astype(np.uint8)
     heatmap = cv2.applyColorMap(disp_vis, cv2.COLORMAP_JET)
     
     return heatmap, max_disp
 
 def main():
-    print("--- CALIBRATION STRESS TEST ---")
+    # --- GESTIONE ARGOMENTI ---
+    parser = argparse.ArgumentParser(description="Calibration Stress Test for GenX320")
+    parser.add_argument("--side", choices=["left", "right"], required=True, 
+                        help="Specifica se testare 'left' o 'right'")
+    args = parser.parse_args()
+    
+    # Definizione del file in base al lato scelto
+    json_file = f"camera_{args.side}.json"
+
+    serial = SERIAL_LEFT
+    if args.side == "right":
+        serial = SERIAL_RIGHT
+
+    print(f"--- CALIBRATION STRESS TEST: {args.side.upper()} CAMERA ---")
     print("1. FLICKER VIEW: Guarda i BORDI. Se 'respirano', funziona.")
     print("2. HEATMAP: Ti mostra di quanto stiamo deformando l'immagine.")
     
-    K, D, width, height = load_calibration(JSON_FILE)
+    try:
+        K, D, width, height = load_calibration(json_file)
+    except FileNotFoundError:
+        print(f"[ERRORE] File config/{json_file} non trovato!")
+        return
     
     # Pre-calcola mappe
     newK, roi = cv2.getOptimalNewCameraMatrix(K, D, (width, height), 1, (width, height))
@@ -59,7 +78,7 @@ def main():
     # Crea la mappa di spostamento (statica)
     heatmap_img, max_shift_px = create_displacement_heatmap(mapx, mapy, width, height)
     
-    mv_it = EventsIterator(input_path="", delta_t=DELTA_T)
+    mv_it = EventsIterator(input_path=serial, delta_t=DELTA_T)
     
     last_switch = time.time()
     show_undistorted = False
@@ -85,27 +104,23 @@ def main():
             view = img_undist.copy()
             label = "UNDISTORTED (Corrected)"
             color = (0, 255, 0)
-            # Aggiungi un bordo verde per far capire che è attiva
             cv2.rectangle(view, (0,0), (width-1, height-1), (0,255,0), 4)
         else:
             view = img_raw.copy()
             label = "RAW (Distorted)"
             color = (0, 0, 255)
-            # Aggiungi un bordo rosso
             cv2.rectangle(view, (0,0), (width-1, height-1), (0,0,255), 4)
             
         cv2.putText(view, label, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
         
         # --- MODO 2: HEATMAP OVERLAY ---
-        # Sovrapponi la heatmap all'immagine raw per vedere DOVE agisce
-        # Blend: 70% immagine, 30% heatmap
         overlay = cv2.addWeighted(img_raw, 0.7, heatmap_img, 0.3, 0)
         cv2.putText(overlay, f"Max Shift: {max_shift_px:.1f}px", (10, height-10), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
 
         # Mostra
-        cv2.imshow("1. FLICKER TEST (Watch Edges)", view)
-        cv2.imshow("2. DISPLACEMENT MAP (Heatmap)", overlay)
+        cv2.imshow(f"1. FLICKER TEST ({args.side})", view)
+        cv2.imshow(f"2. DISPLACEMENT MAP ({args.side})", overlay)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break

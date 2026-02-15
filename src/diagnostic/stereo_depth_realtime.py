@@ -1,4 +1,5 @@
 import cv2
+import os
 import numpy as np
 import json
 import time
@@ -12,23 +13,31 @@ BIAS_VAL = 60
 DISPLAY_SCALE = 3.0               # Zoom 3x
 
 def load_json_params():
+    # Caricamento dal percorso config/stereo_params.json
+    path_S = os.path.join("config", "stereo_params.json")
     try:
-        with open("calib_left.json") as f: data_L = json.load(f)
-        with open("calib_right.json") as f: data_R = json.load(f)
-        with open("stereo_params.json") as f: data_S = json.load(f)
+        with open(path_S) as f: 
+            data_S = json.load(f)
     except FileNotFoundError:
-        print("ERRORE: Mancano i file JSON.")
+        print(f"ERRORE: File {path_S} non trovato.")
         exit()
     
-    K_L, D_L = np.array(data_L["K"]).reshape(3,3), np.array(data_L["D"])
-    K_R, D_R = np.array(data_R["K"]).reshape(3,3), np.array(data_R["D"])
-    width, height = data_L["width"], data_L["height"]
+    width, height = data_S["width"], data_S["height"]
     
-    R1, P1 = np.array(data_S["R1"]), np.array(data_S["P1"])
-    R2, P2 = np.array(data_S["R2"]), np.array(data_S["P2"])
+    # Estrazione parametri con casting esplicito per compatibilità OpenCV
+    K_L = np.array(data_S["camera_left"]["K"], dtype=np.float64)
+    D_L = np.array(data_S["camera_left"]["D"], dtype=np.float64)
+    K_R = np.array(data_S["camera_right"]["K"], dtype=np.float64)
+    D_R = np.array(data_S["camera_right"]["D"], dtype=np.float64)
+    R = np.array(data_S["stereo"]["R"], dtype=np.float64)
+    T = np.array(data_S["stereo"]["T"], dtype=np.float64)
+
+    # Calcolo rettifica
+    R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(K_L, D_L, K_R, D_R, (width, height), R, T, alpha=0)
     
-    m1l, m2l = cv2.initUndistortRectifyMap(K_L, D_L, R1, P1, (width, height), cv2.CV_16SC2)
-    m1r, m2r = cv2.initUndistortRectifyMap(K_R, D_R, R2, P2, (width, height), cv2.CV_16SC2)
+    # Mappe di rettifica
+    m1l, m2l = cv2.initUndistortRectifyMap(K_L, D_L, R1, P1, (width, height), cv2.CV_32FC1)
+    m1r, m2r = cv2.initUndistortRectifyMap(K_R, D_R, R2, P2, (width, height), cv2.CV_32FC1)
     
     return m1l, m2l, m1r, m2r, width, height
 
@@ -48,7 +57,7 @@ def get_frame(evs, width, height):
     if evs.size > 0:
         im[evs['y'], evs['x']] = 255
     kernel = np.ones((3,3), np.uint8)
-    im = cv2.dilate(im, kernel, iterations=1)
+    #im = cv2.dilate(im, kernel, iterations=1)
     return im
 
 def nothing(x): pass
@@ -157,3 +166,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
