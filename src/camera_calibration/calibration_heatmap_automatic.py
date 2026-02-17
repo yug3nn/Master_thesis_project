@@ -10,9 +10,9 @@ from metavision_core.event_io import EventsIterator
 CHECKERBOARD_ROWS = 6     
 CHECKERBOARD_COLS = 9     
 SQUARE_SIZE_M = 0.0165    
-COOLDOWN_SECONDS = 2.0    
-BIAS_INCREMENT = 10       # The value to add to current biases
-DELTA_T = 30000
+COOLDOWN_SECONDS = 3.0    
+BIAS_INCREMENT = 0       # The value to add to current biases
+DELTA_T = 10000
 
 SERIAL_LEFT = "genx320 11-003c"  
 SERIAL_RIGHT = "genx320 10-003c" 
