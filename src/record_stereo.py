@@ -7,7 +7,7 @@ from datetime import datetime
 SERIAL_LEFT = "genx320 11-003c"   
 SERIAL_RIGHT = "genx320 10-003c"  
 DELTA_T = 20000                   
-BIAS_INCREMENT = 30               
+BIAS_INCREMENT = 0               
 RECORD_DIR = "data"
 
 def record_camera(serial, mode, name, file_path, stop_event):

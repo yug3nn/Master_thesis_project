@@ -13,10 +13,10 @@ CHECKERBOARD_COLS = 9
 SQUARE_SIZE_M = 0.0165      
 COOLDOWN_SECONDS = 2.0      
 
-DELTA_T_VAL = 50000         
-MIN_EVENTS_THRESHOLD = 1000 
+DELTA_T_VAL = 30000         
+MIN_EVENTS_THRESHOLD = 10 
 MAX_SYNC_DIFF_US = 200  
-BIAS_INCREMENT = 10      
+BIAS_INCREMENT = 30     
 
 SERIAL_LEFT = "genx320 11-003c"  
 SERIAL_RIGHT = "genx320 10-003c" 
@@ -139,8 +139,8 @@ def main():
             im_L[evs_L['y'], evs_L['x']] = 255
             im_R[evs_R['y'], evs_R['x']] = 255
             
-            im_L_proc = cv2.dilate(im_L, np.ones((2,2)))
-            im_R_proc = cv2.dilate(im_R, np.ones((2,2)))
+            im_L_proc = cv2.bitwise_not(cv2.dilate(im_L, np.ones((3,3))))
+            im_R_proc = cv2.bitwise_not(cv2.dilate(im_R, np.ones((3,3))))
 
             ret_L, corners_L = cv2.findChessboardCornersSB(im_L_proc, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), FLAGS_SB)
             ret_R, corners_R = cv2.findChessboardCornersSB(im_R_proc, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), FLAGS_SB)

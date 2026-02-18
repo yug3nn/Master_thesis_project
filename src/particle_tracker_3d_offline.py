@@ -8,10 +8,10 @@ import sys
 from metavision_core.event_io import EventsIterator
 
 # --- SETTINGS ---
-DELTA_T = 50000            
+DELTA_T = 20000            
 MAX_TRACK_DISTANCE = 0.15  
 MAX_AGE = 5                
-MIN_PARTICLE_AREA = 20     
+MIN_PARTICLE_AREA = 5     
 
 class ParticleTracker:
     def __init__(self, csv_file):
@@ -41,8 +41,12 @@ class ParticleTracker:
                 vel = math.sqrt(sum((float(c) - float(p))**2 for p, c in zip(prev_pos, det_pos))) / dt_sec
                 frame_velocities.append(vel)
                 new_tracks[best_id] = {"pos": det_pos, "age": 0, "vel_norm": vel}
+
                 with open(self.csv_file, mode='a', newline='') as f:
-                    csv.writer(f).writerow([timestamp_us, int(best_id), *[float(p) for p in det_pos], float(vel)])
+                    writer = csv.writer(f)
+                    writer.writerow([timestamp_us, int(best_id), *[float(p) for p in det_pos], float(vel)])
+                    f.flush() # Forza la scrittura su disco per ogni riga (sicurezza per Raspberry Pi)
+
                 del self.tracks[best_id]
             else:
                 new_tracks[self.next_id] = {"pos": det_pos, "age": 0, "vel_norm": 0}
@@ -62,7 +66,7 @@ def load_stereo_config():
     K_R, D_R = np.array(data["camera_right"]["K"]), np.array(data["camera_right"]["D"])
     R, T = np.array(data["stereo"]["R"]), np.array(data["stereo"]["T"])
     R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(K_L, D_L, K_R, D_R, (w, h), R, T, alpha=0)
-    return K_L, D_L, R1, P1, K_R, D_R, R2, P2, float(P1[0,0]), float(abs(T[0])), w, h
+    return K_L, D_L, R1, P1, K_R, D_R, R2, P2, float(P1[0,0]), float(abs(T.flatten()[0])), w, h
 
 def main(file_L, file_R):
     K_L, D_L, R1, P1, K_R, D_R, R2, P2, focal, baseline, w, h = load_stereo_config()
@@ -111,6 +115,10 @@ def main(file_L, file_R):
         
         # Visualizzazione (Solo camera Sinistra per debug veloce)
         vis = cv2.cvtColor(im_L, cv2.COLOR_GRAY2BGR) # im_L è grezza, i cerchi saranno leggermente spostati rispetto ai punti originali
+        for i in range(1, n_L):
+            if stats_L[i, cv2.CC_STAT_AREA] >= MIN_PARTICLE_AREA:
+                cp = cent_L[i]
+                cv2.circle(vis, (int(cp[0]), int(cp[1])), 5, (0, 255, 0), 1)
         cv2.putText(vis, f"Avg Flow: {avg_v:.2f} m/s", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         cv2.imshow("Offline Tracker", cv2.resize(vis, (w*2, h*2)))
         if cv2.waitKey(1) & 0xFF == ord('q'): break

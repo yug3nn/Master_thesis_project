@@ -1,0 +1,91 @@
+gyoza@rosemarypimpi:~/project$ python3 src/camera_calibration/calibration_heatmap_automatic.py --side left
+--- HYBRID CALIBRATION: LEFT CAMERA ---
+[HAL][INFO] bias_diff_on Control value: 25 
+[HAL][INFO] bias_diff_off Control value: 28 
+[HAL][INFO] Success setting bias_diff_on Control value to 25 
+[HAL][INFO] Success setting bias_diff_off Control value to 28 
+[HARDWARE] Biases increased by 0:
+           ON: 25 -> 25
+           OFF: 28 -> 28
+qt.qpa.xcb: XKeyboard extension not present on the X server
+[AUTO] Snap 1 (left) via SB
+[AUTO] Snap 2 (left) via SB
+[AUTO] Snap 3 (left) via SB
+[AUTO] Snap 4 (left) via SB
+[AUTO] Snap 5 (left) via SB
+[AUTO] Snap 6 (left) via SB
+[AUTO] Snap 7 (left) via SB
+[AUTO] Snap 8 (left) via SB
+[AUTO] Snap 9 (left) via SB
+[AUTO] Snap 10 (left) via SB
+[AUTO] Snap 11 (left) via SB
+[AUTO] Snap 12 (left) via SB
+[AUTO] Snap 13 (left) via SB
+[AUTO] Snap 14 (left) via SB
+[AUTO] Snap 15 (left) via SB
+[AUTO] Snap 16 (left) via SB
+[AUTO] Snap 17 (left) via SB
+[AUTO] Snap 18 (left) via SB
+[AUTO] Snap 19 (left) via SB
+[AUTO] Snap 20 (left) via SB
+[AUTO] Snap 21 (left) via SB
+[AUTO] Snap 22 (left) via SB
+[AUTO] Snap 23 (left) via SB
+[AUTO] Snap 24 (left) via SB
+[AUTO] Snap 25 (left) via SB
+[AUTO] Snap 26 (left) via SB
+[AUTO] Snap 27 (left) via SB
+[AUTO] Snap 28 (left) via SB
+[AUTO] Snap 29 (left) via SB
+[AUTO] Snap 30 (left) via SB
+
+[Processing] Prima calibrazione per filtraggio outlier (left)...
+
+Snap       RMS Error       Status     Reason
+-------------------------------------------------------
+0          0.3368          KEEP       
+1          0.3534          KEEP       
+2          0.3596          KEEP       
+3          0.8880          KEEP       
+4          0.5931          KEEP       
+5          0.8447          KEEP       
+6          0.5275          KEEP       
+7          0.5212          KEEP       
+8          0.5270          KEEP       
+9          0.5079          KEEP       
+10         0.6442          KEEP       
+11         0.6527          KEEP       
+12         0.4678          KEEP       
+13         0.5672          KEEP       
+14         3.0975          DISCARD    Outlier
+15         0.4568          KEEP       
+16         0.4294          KEEP       
+17         0.7976          KEEP       
+18         0.4846          KEEP       
+19         0.5742          KEEP       
+20         0.5075          KEEP       
+21         0.3152          KEEP       
+22         0.4286          KEEP       
+23         0.5287          KEEP       
+24         0.3866          KEEP       
+25         0.3489          KEEP       
+26         0.5743          KEEP       
+27         0.5216          KEEP       
+28         0.5990          KEEP       
+29         0.3259          KEEP       
+
+[Processing] Ricalcolo con 29 scatti validi...
+
+[SUCCESS] RMS Finale (left): 0.5382 pixel
+           (Migliorato da: 0.7754)
+
+[SUCCESS] Calibration saved to: config/camera_left.json
+gyoza@rosemarypimpi:~/project$ python3 src/diagnostic/test_calibration_visual.py --side left
+--- CALIBRATION STRESS TEST: LEFT CAMERA ---
+1. FLICKER VIEW: Guarda i BORDI. Se 'respirano', funziona.
+2. HEATMAP: Ti mostra di quanto stiamo deformando l'immagine.
+
+[ANALISI LENTE]
+ - Spostamento massimo ai bordi: 15.21 pixel
+ - Spostamento medio: 7.60 pixel
+qt.qpa.xcb: XKeyboard extension not present on the X server

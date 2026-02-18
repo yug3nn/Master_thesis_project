@@ -12,7 +12,9 @@ CHECKERBOARD_COLS = 9
 SQUARE_SIZE_M = 0.0165    
 COOLDOWN_SECONDS = 3.0    
 BIAS_INCREMENT = 0       # The value to add to current biases
-DELTA_T = 10000
+DELTA_T = 20000
+MAX_SINGLE_SNAP_RMS = 1.0  # Soglia massima invalicabile (pixel)
+MIN_REQUIRED_SNAPS = 15    # Numero minimo di scatti dopo il filtro
 
 SERIAL_LEFT = "genx320 11-003c"  
 SERIAL_RIGHT = "genx320 10-003c" 
@@ -113,8 +115,7 @@ def main():
         im[evs_filtered['y'], evs_filtered['x']] = 255
         
         kernel = np.ones((2,2), np.uint8)
-        im_filled = cv2.dilate(im, kernel, iterations=1)
-        im_vis = cv2.bitwise_not(im_filled) 
+        im_vis = cv2.bitwise_not(cv2.dilate(im, kernel, iterations=1))
         display = cv2.cvtColor(im_vis, cv2.COLOR_GRAY2BGR)
 
         corners_found = None
@@ -156,12 +157,59 @@ def main():
     cv2.destroyAllWindows()
 
     if valid_snaps >= 20:
-        print(f"\n[Processing] Computing calibration for {args.side} camera...")
-        ret, mtx, dist, _, _ = cv2.calibrateCamera(objpoints, imgpoints, (width, height), None, None)
-        print(f"RMS Error: {ret:.4f} pixels")
-        save_prophesee_json(filename, width, height, mtx, dist)
+        print(f"\n[Processing] Prima calibrazione per filtraggio outlier ({args.side})...")
+        
+        # 1. Prima calibrazione per ottenere i residui di ogni scatto
+        # calibrateCameraExtended restituisce 8 valori, l'ultimo è perViewErrors
+        res = cv2.calibrateCameraExtended(
+            objpoints, imgpoints, (width, height), None, None
+        )
+        ret, mtx, dist, rvecs, tvecs, stdDevInt, stdDevExt, perViewErrors = res
+
+        # 2. Analisi degli errori
+        errors = perViewErrors.flatten()
+        mean_error = np.mean(errors)
+        std_error = np.std(errors)
+        
+        # Soglia statistica: Media + 1 Deviazione Standard
+        statistical_threshold = mean_error + std_error
+        
+        filtered_obj = []
+        filtered_img = []
+        
+        print(f"\n{'Snap':<10} {'RMS Error':<15} {'Status':<10} {'Reason'}")
+        print("-" * 55)
+        for i, err in enumerate(errors):
+            # Condizione doppia: deve essere sotto la media+std E sotto il limite fisso
+            is_stat_ok = err < statistical_threshold
+            is_abs_ok = err < MAX_SINGLE_SNAP_RMS
+            
+            if is_stat_ok and is_abs_ok:
+                status = "KEEP"
+                reason = ""
+                filtered_obj.append(objpoints[i])
+                filtered_img.append(imgpoints[i])
+            else:
+                status = "DISCARD"
+                reason = "Outlier" if not is_stat_ok else "Too High (>1.0)"
+            
+            print(f"{i:<10} {err:<15.4f} {status:<10} {reason}")
+
+        # 3. Seconda calibrazione con il set filtrato
+        if len(filtered_obj) >= MIN_REQUIRED_SNAPS:
+            print(f"\n[Processing] Ricalcolo con {len(filtered_obj)} scatti validi...")
+            ret_final, mtx_f, dist_f, rvecs_f, tvecs_f = cv2.calibrateCamera(
+                filtered_obj, filtered_img, (width, height), None, None
+            )
+
+            print(f"\n[SUCCESS] RMS Finale ({args.side}): {ret_final:.4f} pixel")
+            print(f"           (Migliorato da: {ret:.4f})")
+            
+            save_prophesee_json(filename, width, height, mtx_f, dist_f)
+        else:
+            print(f"\n[ERROR] Troppi scatti scartati. Rimasti solo {len(filtered_obj)}. Ripeti la cattura.")
     else:
-        print(f"\n[Error] Insufficient data ({valid_snaps}/20).")
+        print(f"\n[Error] Dati insufficienti per il filtraggio ({valid_snaps}/20).")
 
 if __name__ == "__main__":
     main()
