@@ -5,211 +5,131 @@ import time
 import os
 import argparse
 from metavision_core.event_io import EventsIterator
+from datetime import datetime
+
+# Adds the current working directory (project root) to sys.path
+sys.path.append(os.getcwd())
+
+from src.utils.logger_setup import setup_logging
 
 # --- CONFIGURATION ---
 CHECKERBOARD_ROWS = 6     
 CHECKERBOARD_COLS = 9     
 SQUARE_SIZE_M = 0.0165    
 COOLDOWN_SECONDS = 3.0    
-BIAS_INCREMENT = 0       # The value to add to current biases
+BIAS_INCREMENT = 0       
 DELTA_T = 20000
-MAX_SINGLE_SNAP_RMS = 1.0  # Soglia massima invalicabile (pixel)
-MIN_REQUIRED_SNAPS = 15    # Numero minimo di scatti dopo il filtro
+MAX_SINGLE_SNAP_RMS = 1.0  
+MIN_REQUIRED_SNAPS = 15    
 
 SERIAL_LEFT = "genx320 11-003c"  
 SERIAL_RIGHT = "genx320 10-003c" 
 
-def configure_biases(iterator):
-    """ Access the hardware device and increase bias_diff_on/off by a fixed offset """
+def configure_biases(iterator, logger):
     try:
-        # Access the underlying HAL device
         device = iterator.reader.device
         biases = device.get_i_ll_biases()
-        
         if biases:
-            # Get current values
             current_on = biases.get("bias_diff_on")
             current_off = biases.get("bias_diff_off")
-            
-            # Set new values
             biases.set("bias_diff_on", current_on + BIAS_INCREMENT)
             biases.set("bias_diff_off", current_off + BIAS_INCREMENT)
-            
-            print(f"[HARDWARE] Biases increased by {BIAS_INCREMENT}:")
-            print(f"           ON: {current_on} -> {current_on + BIAS_INCREMENT}")
-            print(f"           OFF: {current_off} -> {current_off + BIAS_INCREMENT}")
-        else:
-            print("[WARNING] Biases interface not available.")
+            logger.info(f"HW Biases set: ON={current_on+BIAS_INCREMENT}, OFF={current_off+BIAS_INCREMENT}")
     except Exception as e:
-        print(f"[WARNING] Could not configure hardware biases: {e}")
+        logger.warning(f"Could not configure hardware biases: {e}")
 
-def save_prophesee_json(filename, width, height, mtx, dist):
-    """ Save calibration data in Metavision SDK compatible format inside 'config' folder """
+def save_prophesee_json(filename, width, height, mtx, dist, logger):
     os.makedirs("config", exist_ok=True)
     full_path = os.path.join("config", filename)
-    
     data = {
-        "type": "pinhole",
-        "width": width,
-        "height": height,
-        "K": [mtx[0,0], mtx[0,1], mtx[0,2], 
-              mtx[1,0], mtx[1,1], mtx[1,2], 
-              mtx[2,0], mtx[2,1], mtx[2,2]],
+        "type": "pinhole", "width": width, "height": height,
+        "K": mtx.flatten().tolist(),
         "D": dist.flatten().tolist()
     }
-    
     with open(full_path, 'w') as f:
         json.dump(data, f, indent=4)
-    print(f"\n[SUCCESS] Calibration saved to: {full_path}")
+    logger.info(f"Calibration saved to: {full_path}")
 
-def generate_point_heatmap(accumulated_mask):
-    vis = accumulated_mask * 20.0
-    vis = np.clip(vis, 0, 255).astype(np.uint8)
-    heatmap_color = cv2.applyColorMap(vis, cv2.COLORMAP_JET)
-    heatmap_color[vis == 0] = [0, 0, 0]
-    return heatmap_color
+def save_points_json(side, objpoints, imgpoints, width, height, logger):
+    os.makedirs("data_analysis", exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    full_path = os.path.join("data_analysis", f"points_{side}_{timestamp}.json")
+    data = {
+        "side": side, "width": width, "height": height,
+        "objpoints": [op.tolist() for op in objpoints],
+        "imgpoints": [ip.tolist() for ip in imgpoints]
+    }
+    with open(full_path, 'w') as f:
+        json.dump(data, f)
+    logger.info(f"Points saved for offline analysis: {full_path}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Hybrid Calibration for GenX320 Event Cameras")
-    parser.add_argument("--side", choices=["left", "right"], required=True, 
-                        help="Specify camera position: 'left' or 'right'")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--side", choices=["left", "right"], required=True)
+    # Mode is now mandatory as requested
+    parser.add_argument("--mode", choices=["calibrate", "analyze"], required=True)
     args = parser.parse_args()
-    
-    serial = SERIAL_LEFT
-    if args.side == "right":
-        serial = SERIAL_RIGHT
 
-    filename = f"camera_{args.side}.json"
-
-    print(f"--- HYBRID CALIBRATION: {args.side.upper()} CAMERA ---")
+    logger = setup_logging("heatmap_auto", args.side)
+    serial = SERIAL_LEFT if args.side == "left" else SERIAL_RIGHT
     
-    # Initialize Event Iterator
     mv_it = EventsIterator(input_path=serial, delta_t=DELTA_T) 
-    
-    # --- HARDWARE CONFIGURATION ---
-    # Apply bias increase before starting the loop
-    configure_biases(mv_it)
-    
+    configure_biases(mv_it, logger)
     height, width = mv_it.get_size()
     
-    # Rest of the calibration logic...
-    criteria_subpix = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+    # Chessboard params
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
     flags_sb = cv2.CALIB_CB_EXHAUSTIVE | cv2.CALIB_CB_ACCURACY | cv2.CALIB_CB_NORMALIZE_IMAGE
-    flags_std = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE | cv2.CALIB_CB_FAST_CHECK
 
     objp = np.zeros((CHECKERBOARD_ROWS * CHECKERBOARD_COLS, 3), np.float32)
     objp[:, :2] = np.mgrid[0:CHECKERBOARD_ROWS, 0:CHECKERBOARD_COLS].T.reshape(-1, 2)
-    objp = objp * SQUARE_SIZE_M
+    objp *= SQUARE_SIZE_M
 
     objpoints, imgpoints = [], []
     point_mask = np.zeros((height, width), dtype=np.float32)
-    valid_snaps = 0
-    last_capture_time = time.time()
+    valid_snaps, last_cap = 0, time.time()
+
+    logger.info(f"Streaming from {args.side} camera. Press 'q' to stop.")
 
     for evs in mv_it:
         if evs.size == 0: continue
-
-        mask_on = evs['p'] == 1 
-        evs_filtered = evs[mask_on] 
         im = np.zeros((height, width), dtype=np.uint8)
-        im[evs_filtered['y'], evs_filtered['x']] = 255
+        im[evs[evs['p']==1]['y'], evs[evs['p']==1]['x']] = 255
+        im_vis = cv2.bitwise_not(cv2.dilate(im, np.ones((2,2), np.uint8), iterations=1))
         
-        kernel = np.ones((2,2), np.uint8)
-        im_vis = cv2.bitwise_not(cv2.dilate(im, kernel, iterations=1))
-        display = cv2.cvtColor(im_vis, cv2.COLOR_GRAY2BGR)
+        ret, corners = cv2.findChessboardCornersSB(im_vis, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), flags=flags_sb)
+        
+        if ret and (time.time() - last_cap > COOLDOWN_SECONDS):
+            objpoints.append(objp)
+            imgpoints.append(corners)
+            valid_snaps += 1
+            last_cap = time.time()
+            for c in corners: cv2.circle(point_mask, (int(c[0][0]), int(c[0][1])), 2, 1.0, -1)
+            logger.info(f"Snap {valid_snaps} captured.")
 
-        corners_found = None
-        method_used = ""
-        ret = False
-
-        try:
-            ret, corners = cv2.findChessboardCornersSB(im_vis, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), flags=flags_sb)
-            if ret:
-                corners_found, method_used = corners, "SB"
-        except: pass
-
-        if not ret:
-            ret, corners = cv2.findChessboardCorners(im_vis, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), flags=flags_std)
-            if ret:
-                corners_found = cv2.cornerSubPix(im_vis, corners, (11, 11), (-1, -1), criteria_subpix)
-                method_used = "STD"
-
-        if ret and corners_found is not None:
-            cv2.drawChessboardCorners(display, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), corners_found, ret)
-            if time.time() - last_capture_time > COOLDOWN_SECONDS:
-                objpoints.append(objp)
-                imgpoints.append(corners_found)
-                valid_snaps += 1
-                last_capture_time = time.time()
-                for corner in corners_found:
-                    cv2.circle(point_mask, (int(corner[0][0]), int(corner[0][1])), 2, 1.0, -1)
-                print(f"[AUTO] Snap {valid_snaps} ({args.side}) via {method_used}")
-                cv2.rectangle(display, (0,0), (width, height), (255,255,255), -1)
-
-        heatmap_display = generate_point_heatmap(point_mask)
-        cv2.putText(display, f"Camera: {args.side} | Snaps: {valid_snaps}", (10, 30), 1, 1.5, (255, 255, 0), 2)
-        cv2.imshow("Hybrid Calibration", display)
-        cv2.imshow("Point Density Heatmap", heatmap_display)
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        cv2.imshow("Calibration", im_vis)
+        if cv2.waitKey(1) & 0xFF == ord('q'): break
 
     cv2.destroyAllWindows()
 
     if valid_snaps >= 20:
-        print(f"\n[Processing] Prima calibrazione per filtraggio outlier ({args.side})...")
-        
-        # 1. Prima calibrazione per ottenere i residui di ogni scatto
-        # calibrateCameraExtended restituisce 8 valori, l'ultimo è perViewErrors
-        res = cv2.calibrateCameraExtended(
-            objpoints, imgpoints, (width, height), None, None
-        )
-        ret, mtx, dist, rvecs, tvecs, stdDevInt, stdDevExt, perViewErrors = res
-
-        # 2. Analisi degli errori
-        errors = perViewErrors.flatten()
-        mean_error = np.mean(errors)
-        std_error = np.std(errors)
-        
-        # Soglia statistica: Media + 1 Deviazione Standard
-        statistical_threshold = mean_error + std_error
-        
-        filtered_obj = []
-        filtered_img = []
-        
-        print(f"\n{'Snap':<10} {'RMS Error':<15} {'Status':<10} {'Reason'}")
-        print("-" * 55)
-        for i, err in enumerate(errors):
-            # Condizione doppia: deve essere sotto la media+std E sotto il limite fisso
-            is_stat_ok = err < statistical_threshold
-            is_abs_ok = err < MAX_SINGLE_SNAP_RMS
+        save_points_json(args.side, objpoints, imgpoints, width, height, logger)
+        if args.mode == "calibrate":
+            res = cv2.calibrateCameraExtended(objpoints, imgpoints, (width, height), None, None)
+            ret, mtx, dist, rvecs, tvecs, stdInt, stdExt, viewErr = res
             
-            if is_stat_ok and is_abs_ok:
-                status = "KEEP"
-                reason = ""
-                filtered_obj.append(objpoints[i])
-                filtered_img.append(imgpoints[i])
-            else:
-                status = "DISCARD"
-                reason = "Outlier" if not is_stat_ok else "Too High (>1.0)"
+            thresh = np.mean(viewErr) + np.std(viewErr)
+            f_obj, f_img = [], []
+            for i, err in enumerate(viewErr.flatten()):
+                if err < thresh and err < MAX_SINGLE_SNAP_RMS:
+                    f_obj.append(objpoints[i]); f_img.append(imgpoints[i])
             
-            print(f"{i:<10} {err:<15.4f} {status:<10} {reason}")
-
-        # 3. Seconda calibrazione con il set filtrato
-        if len(filtered_obj) >= MIN_REQUIRED_SNAPS:
-            print(f"\n[Processing] Ricalcolo con {len(filtered_obj)} scatti validi...")
-            ret_final, mtx_f, dist_f, rvecs_f, tvecs_f = cv2.calibrateCamera(
-                filtered_obj, filtered_img, (width, height), None, None
-            )
-
-            print(f"\n[SUCCESS] RMS Finale ({args.side}): {ret_final:.4f} pixel")
-            print(f"           (Migliorato da: {ret:.4f})")
-            
-            save_prophesee_json(filename, width, height, mtx_f, dist_f)
-        else:
-            print(f"\n[ERROR] Troppi scatti scartati. Rimasti solo {len(filtered_obj)}. Ripeti la cattura.")
+            if len(f_obj) >= MIN_REQUIRED_SNAPS:
+                ret_f, mtx_f, dist_f, _, _ = cv2.calibrateCamera(f_obj, f_img, (width, height), None, None)
+                logger.info(f"Final Refined RMS: {ret_f:.4f}")
+                save_prophesee_json(f"camera_{args.side}.json", width, height, mtx_f, dist_f, logger)
     else:
-        print(f"\n[Error] Dati insufficienti per il filtraggio ({valid_snaps}/20).")
+        logger.error("Insufficient snapshots for calibration.")
 
 if __name__ == "__main__":
     main()
