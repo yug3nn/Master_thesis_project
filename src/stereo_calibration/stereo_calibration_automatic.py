@@ -151,6 +151,7 @@ def main():
     
     # Start threads
     t_L.start()
+    time.sleep(0.5)
     t_R.start()
 
     objp = np.zeros((CHECKERBOARD_ROWS * CHECKERBOARD_COLS, 3), np.float32)
@@ -224,7 +225,18 @@ def main():
                                 logger.info(f"Snap {valid_snaps} captured (Sync diff: {abs(ts_L - ts_R)}us)")
 
                 if not args.headless:
-                    cv2.imshow("Stereo Stream", np.hstack((im_L, im_R)))
+                    # Prepare the combined frame (L | R)
+                    combined = np.hstack((im_L, im_R))
+                    # Define text parameters
+                    text = f"Snaps: {valid_snaps}/15"
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 0.8
+                    thickness = 2
+                    color = (0, 255, 0) # Green in BGR
+                    position = (10, 10) # Top-left corner
+                    # Put the text on the image
+                    cv2.putText(combined, text, position, font, font_scale, color, thickness, cv2.LINE_AA)
+                    cv2.imshow("Stereo Stream", combined)
                     cv2.imshow("Heatmap", generate_point_heatmap(point_mask))
                     if cv2.waitKey(1) & 0xFF == ord('q'): break
 

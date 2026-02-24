@@ -2,45 +2,56 @@ import cv2
 import numpy as np
 import json
 import time
-import sys
 import os
 import argparse
 from metavision_core.event_io import EventsIterator
+import sys
 
-sys.append.path(os.getcwd())
+# Adds the current working directory (project root) to sys.path
+sys.path.append(os.getcwd())
 
 from src.utils.logger_setup import setup_logging
 from datetime import datetime
 
 # --- CONFIGURATION ---
-CHECKERBOARD_ROWS = 6       
-CHECKERBOARD_COLS = 9       
-SQUARE_SIZE_M = 0.0165      
-COOLDOWN_SECONDS = 2.0      
-
-DELTA_T_VAL = 30000         
-MIN_EVENTS_THRESHOLD = 10 
-MAX_SYNC_DIFF_US = 200  
-BIAS_INCREMENT = 30     
+CHECKERBOARD_ROWS = 6     
+CHECKERBOARD_COLS = 9     
+SQUARE_SIZE_M = 0.0165    
+COOLDOWN_SECONDS = 3.0    
+BIAS_INCREMENT = 0       
+DELTA_T = 20000
+MAX_SINGLE_SNAP_RMS = 1.0  
+MIN_REQUIRED_SNAPS = 15    
 
 SERIAL_LEFT = "genx320 11-003c"  
 SERIAL_RIGHT = "genx320 10-003c" 
 
-FLAGS_SB = cv2.CALIB_CB_EXHAUSTIVE | cv2.CALIB_CB_ACCURACY | cv2.CALIB_CB_NORMALIZE_IMAGE
-
-def configure_biases(iterator, camera_name, logger):
-    """ Hardware access to increase bias_diff_on/off by the fixed increment """
+def configure_biases(iterator, logger):
+    """ Hardware access to increase bias_diff_on/off by a fixed offset """
     try:
-        device = iterator.reader.device if hasattr(iterator.reader, 'device') else iterator.reader.get_device()
+        device = iterator.reader.device
         biases = device.get_i_ll_biases()
         if biases:
             current_on = biases.get("bias_diff_on")
             current_off = biases.get("bias_diff_off")
             biases.set("bias_diff_on", current_on + BIAS_INCREMENT)
             biases.set("bias_diff_off", current_off + BIAS_INCREMENT)
-            logger.info(f"[{camera_name}] Hardware biases increased (+{BIAS_INCREMENT})")
+            logger.info(f"Biases set: ON={current_on + BIAS_INCREMENT}, OFF={current_off + BIAS_INCREMENT}")
     except Exception as e:
-        logger.warning(f"Bias config failed for {camera_name}: {e}")
+        logger.warning(f"Could not configure hardware biases: {e}")
+
+def save_prophesee_json(filename, width, height, mtx, dist, logger):
+    """ Save calibration data in Metavision SDK compatible format """
+    os.makedirs("config", exist_ok=True)
+    full_path = os.path.join("config", filename)
+    data = {
+        "type": "pinhole", "width": width, "height": height,
+        "K": mtx.flatten().tolist(),
+        "D": dist.flatten().tolist()
+    }
+    with open(full_path, 'w') as f:
+        json.dump(data, f, indent=4)
+    logger.info(f"Calibration parameters saved to: {full_path}")
 
 def generate_point_heatmap(accumulated_mask):
     """ Generate a jet-colored heatmap based on accumulated corner detections """
@@ -50,193 +61,104 @@ def generate_point_heatmap(accumulated_mask):
     heatmap_color[vis == 0] = [0, 0, 0]
     return heatmap_color
 
-def load_prophesee_json(filename, logger):
-    """ Load intrinsic parameters from config folder """
-    filepath = os.path.join("config", filename)
-    if not os.path.exists(filepath):
-        logger.error(f"File {filepath} not found!")
-        sys.exit(1)
-    with open(filepath, 'r') as f:
-        data = json.load(f)
-    
-    # Support both Metavision 'K' and analyzed 'camera_matrix' formats
-    k_raw = data.get("K", data.get("camera_matrix"))
-    mtx = np.array(k_raw).reshape(3, 3).astype(np.float32)
-    
-    d_raw = data.get("D", data.get("dist_coeffs"))
-    dist = np.array(d_raw).astype(np.float32)
-    
-    return mtx, dist, data["width"], data["height"]
-
-def save_points_json(objpoints, imgpoints_L, imgpoints_R, width, height, logger):
-    """ Save extracted points for offline RMS analysis """
+def save_points_json(side, objpoints, imgpoints, width, height, logger):
+    """ Save extracted points for offline analysis """
     os.makedirs("data_analysis", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filepath = os.path.join("data_analysis", f"points_stereo_{timestamp}.json")
-    
+    full_path = os.path.join("data_analysis", f"points_{side}_{timestamp}.json")
     data = {
-        "width": width, "height": height,
+        "side": side, "width": width, "height": height,
         "objpoints": [op.tolist() for op in objpoints],
-        "imgpoints_L": [ip.tolist() for ip in imgpoints_L],
-        "imgpoints_R": [ip.tolist() for ip in imgpoints_R]
+        "imgpoints": [ip.tolist() for ip in imgpoints]
     }
-    with open(filepath, 'w') as f:
+    with open(full_path, 'w') as f:
         json.dump(data, f)
-    logger.info(f"Stereo points saved for analysis: {filepath}")
-
-def save_stereo_params(filename, mtx_L, dist_L, mtx_R, dist_R, R, T, E, F, width, height, logger):
-    """ Save final stereo parameters to config folder """
-    os.makedirs("config", exist_ok=True)
-    filepath = os.path.join("config", filename)
-    data = {
-        "width": width, "height": height,
-        "camera_left": {"K": mtx_L.tolist(), "D": dist_L.tolist()},
-        "camera_right": {"K": mtx_R.tolist(), "D": dist_R.tolist()},
-        "stereo": {"R": R.tolist(), "T": T.tolist(), "E": E.tolist(), "F": F.tolist()}
-    }
-    with open(filepath, 'w') as f:
-        json.dump(data, f, indent=4)
-    logger.info(f"Stereo calibration parameters saved to: {filepath}")
+    logger.info(f"Raw points saved to: {full_path}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Single-threaded Stereo Calibration")
-    parser.add_argument("--mode", choices=["calibrate", "analyze"], required=True,
-                        help="'calibrate' updates config, 'analyze' only saves points.")
-    parser.add_argument("--headless", action="store_true", help="Run without UI windows")
+    parser = argparse.ArgumentParser(description="Automated Heatmap Calibration for GenX320")
+    parser.add_argument("--side", choices=["left", "right"], required=True)
+    parser.add_argument("--mode", choices=["calibrate", "analyze"], required=True)
     args = parser.parse_args()
 
-    # Initialize logger
-    logger = setup_logging("stereo_calibration")
-    logger.info(f"Starting process in {args.mode.upper()} mode")
-
-    # Load intrinsics
-    mtx_L, dist_L, width_L, height_L = load_prophesee_json("camera_left.json", logger)
-    mtx_R, dist_R, width_R, height_R = load_prophesee_json("camera_right.json", logger)
-    width, height = width_L, height_L
+    logger = setup_logging("heatmap_auto", args.side)
+    serial = SERIAL_LEFT if args.side == "left" else SERIAL_RIGHT
+    
+    mv_it = EventsIterator(input_path=serial, delta_t=DELTA_T) 
+    configure_biases(mv_it, logger)
+    height, width = mv_it.get_size()
+    
+    # Calibration flags
+    flags_sb = cv2.CALIB_CB_EXHAUSTIVE | cv2.CALIB_CB_ACCURACY | cv2.CALIB_CB_NORMALIZE_IMAGE
 
     objp = np.zeros((CHECKERBOARD_ROWS * CHECKERBOARD_COLS, 3), np.float32)
     objp[:, :2] = np.mgrid[0:CHECKERBOARD_ROWS, 0:CHECKERBOARD_COLS].T.reshape(-1, 2) * SQUARE_SIZE_M
 
-    objpoints, imgpoints_L, imgpoints_R = [], [], []
-
-    # Initialize Iterators
-    it_L = EventsIterator(input_path=SERIAL_LEFT, delta_t=DELTA_T_VAL)
-    it_R = EventsIterator(input_path=SERIAL_RIGHT, delta_t=DELTA_T_VAL)
-
-    # Hardware Sync Configuration (Left=Slave, Right=Master)
-    try:
-        dev_L = it_L.reader.device if hasattr(it_L.reader, 'device') else it_L.reader.get_device()
-        dev_R = it_R.reader.device if hasattr(it_R.reader, 'device') else it_R.reader.get_device()
-        
-        dev_L.get_i_camera_synchronization().set_mode_slave()
-        dev_R.get_i_camera_synchronization().set_mode_master()
-        
-        logger.info("Hardware Sync enabled: LEFT (Slave) <--- RIGHT (Master)")
-    except Exception as e:
-        logger.warning(f"Sync configuration failed: {e}")
-
-    configure_biases(it_L, "LEFT", logger)
-    configure_biases(it_R, "RIGHT", logger)
-
-    valid_snaps = 0
-    last_capture_time = time.time()
+    objpoints, imgpoints = [], []
     point_mask = np.zeros((height, width), dtype=np.float32)
+    valid_snaps, last_cap = 0, time.time()
 
-    logger.info("Acquisition loop started. Press 'q' to stop.")
+    logger.info(f"Streaming {args.side.upper()} camera. Move checkerboard. Press 'q' to stop.")
 
-    try:
-        for evs_L, evs_R in zip(it_L, it_R):
-            ts_L = it_L.get_current_time()
-            ts_R = it_R.get_current_time()
-            
-            # Synchronization Guard
-            if abs(ts_L - ts_R) > MAX_SYNC_DIFF_US: 
-                continue
-            
-            # Filter Polarity 1 (ON events)
-            evs_L = evs_L[evs_L['p'] == 1]
-            evs_R = evs_R[evs_R['p'] == 1]
+    for evs in mv_it:
+        if evs.size == 0: continue
+        
+        # Filter for ON events (Polarity 1)
+        im = np.zeros((height, width), dtype=np.uint8)
+        im[evs[evs['p']==1]['y'], evs[evs['p']==1]['x']] = 255
+        
+        # Pre-process for Sector-Based (SB) detector
+        im_vis = cv2.bitwise_not(cv2.dilate(im, np.ones((2,2), np.uint8), iterations=1))
+        display = cv2.cvtColor(im_vis, cv2.COLOR_GRAY2BGR)
 
-            if evs_L.size < MIN_EVENTS_THRESHOLD or evs_R.size < MIN_EVENTS_THRESHOLD: 
-                continue
+        # Detect corners
+        ret, corners = cv2.findChessboardCornersSB(im_vis, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), flags=flags_sb)
+        
+        if ret:
+            cv2.drawChessboardCorners(display, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), corners, ret)
+            if time.time() - last_cap > COOLDOWN_SECONDS:
+                objpoints.append(objp)
+                imgpoints.append(corners)
+                valid_snaps += 1
+                last_cap = time.time()
+                for c in corners:
+                    cv2.circle(point_mask, (int(c[0][0]), int(c[0][1])), 2, 1.0, -1)
+                logger.info(f"Snap {valid_snaps} captured.")
 
-            im_L = np.zeros((height, width), dtype=np.uint8)
-            im_R = np.zeros((height, width), dtype=np.uint8)
-            im_L[evs_L['y'], evs_L['x']] = 255
-            im_R[evs_R['y'], evs_R['x']] = 255
-            
-            proc_L = cv2.bitwise_not(cv2.dilate(im_L, np.ones((3,3))))
-            proc_R = cv2.bitwise_not(cv2.dilate(im_R, np.ones((3,3))))
+        # GUI
+        heatmap_display = generate_point_heatmap(point_mask)
+        cv2.putText(display, f"Snaps: {valid_snaps}", (10, 30), 1, 1.5, (255, 255, 0), 2)
+        cv2.imshow("Acquisition Stream", display)
+        cv2.imshow("Coverage Heatmap", heatmap_display)
+        
+        if cv2.waitKey(1) & 0xFF == ord('q'): break
 
-            ret_L, corners_L = cv2.findChessboardCornersSB(proc_L, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), FLAGS_SB)
-            ret_R, corners_R = cv2.findChessboardCornersSB(proc_R, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), FLAGS_SB)
+    cv2.destroyAllWindows()
 
-            if ret_L and ret_R:
-                if time.time() - last_capture_time > COOLDOWN_SECONDS:
-                    objpoints.append(objp)
-                    imgpoints_L.append(corners_L)
-                    imgpoints_R.append(corners_R)
-                    valid_snaps += 1
-                    last_capture_time = time.time()
-                    
-                    for corner in corners_L:
-                        cv2.circle(point_mask, (int(corner[0][0]), int(corner[0][1])), 2, 1.0, -1)
-                    
-                    logger.info(f"Snap {valid_snaps} captured (Sync diff: {abs(ts_L - ts_R)}us)")
-
-            if not args.headless:
-                combined = np.hstack((im_L, im_R))
-                heatmap_display = generate_point_heatmap(point_mask)
-                cv2.imshow("Stereo Acquisition", combined)
-                cv2.imshow("Coverage Heatmap", heatmap_display)
-                if cv2.waitKey(1) & 0xFF == ord('q'): break
-
-    except KeyboardInterrupt:
-        logger.info("Loop interrupted by user.")
-
-    if not args.headless: cv2.destroyAllWindows()
-
-    if valid_snaps >= 15:
-        # Save points for analyze mode regardless of selected mode
-        save_points_json(objpoints, imgpoints_L, imgpoints_R, width, height, logger)
-
+    if valid_snaps >= 20:
+        save_points_json(args.side, objpoints, imgpoints, width, height, logger)
+        
         if args.mode == "calibrate":
-            logger.info("Starting stereo calibration with outlier rejection...")
+            logger.info("Starting two-stage calibration with outlier rejection...")
+            res = cv2.calibrateCameraExtended(objpoints, imgpoints, (width, height), None, None)
+            ret, mtx, dist, rvecs, tvecs, _, _, viewErr = res
             
-            # Step 1: Extended calibration to identify residues
-            res = cv2.stereoCalibrateExtended(
-                objpoints, imgpoints_L, imgpoints_R,
-                mtx_L, dist_L, mtx_R, dist_R,
-                (width, height), flags=cv2.CALIB_FIX_INTRINSIC
-            )
-            ret, M1, D1, M2, D2, R, T, E, F, perViewErrors = res
-
-            # Step 2: Error analysis (Mean + 1 StdDev)
-            errors = np.mean(perViewErrors, axis=1).flatten()
-            threshold = np.mean(errors) + np.std(errors)
-            
-            f_obj, f_L, f_R = [], [], []
-            for i, err in enumerate(errors):
-                if err < threshold:
+            # Statistical threshold: Mean + StdDev
+            thresh = np.mean(viewErr) + np.std(viewErr)
+            f_obj, f_img = [], []
+            for i, err in enumerate(viewErr.flatten()):
+                if err < thresh and err < MAX_SINGLE_SNAP_RMS:
                     f_obj.append(objpoints[i])
-                    f_L.append(imgpoints_L[i])
-                    f_R.append(imgpoints_R[i])
-                else:
-                    logger.info(f"Snap {i} discarded: RMS {err:.4f} > {threshold:.4f}")
-
-            # Step 3: Final refined calibration
-            logger.info(f"Refining with {len(f_obj)} valid snapshots...")
-            ret_f, M1f, D1f, M2f, D2f, Rf, Tf, Ef, Ff = cv2.stereoCalibrate(
-                f_obj, f_L, f_R, mtx_L, dist_L, mtx_R, dist_R,
-                (width, height), flags=cv2.CALIB_FIX_INTRINSIC
-            )
-
-            logger.info(f"Final Stereo RMS: {ret_f:.4f} pixels (Original: {ret:.4f})")
-            save_stereo_params("stereo_params.json", M1f, D1f, M2f, D2f, Rf, Tf, Ef, Ff, width, height, logger)
-        else:
-            logger.info("Mode 'analyze' complete. Parameters were not updated.")
+                    f_img.append(imgpoints[i])
+            
+            if len(f_obj) >= MIN_REQUIRED_SNAPS:
+                ret_f, mtx_f, dist_f, _, _ = cv2.calibrateCamera(f_obj, f_img, (width, height), None, None)
+                logger.info(f"Final Refined RMS: {ret_f:.4f} (Original: {ret:.4f})")
+                save_prophesee_json(f"camera_{args.side}.json", width, height, mtx_f, dist_f, logger)
+            else:
+                logger.error(f"Too many outliers. Only {len(f_obj)} snaps remained.")
     else:
-        logger.error(f"Not enough snaps captured ({valid_snaps}/15).")
+        logger.error(f"Not enough snapshots ({valid_snaps}/20). Calibration aborted.")
 
 if __name__ == "__main__":
     main()
