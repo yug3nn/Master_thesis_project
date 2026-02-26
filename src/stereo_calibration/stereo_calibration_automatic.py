@@ -209,6 +209,8 @@ def main():
                     found_L = cv2.checkChessboard(proc_L, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS))
                     found_R = cv2.checkChessboard(proc_R, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS))
 
+                    found_L = found_R = True
+
                     if found_L and found_R:
                         ret_L, corners_L = cv2.findChessboardCornersSB(proc_L, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), FLAGS_SB)
                         ret_R, corners_R = cv2.findChessboardCornersSB(proc_R, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), FLAGS_SB)
@@ -228,14 +230,14 @@ def main():
                     # Prepare the combined frame (L | R)
                     combined = np.hstack((im_L, im_R))
                     # Define text parameters
-                    text = f"Snaps: {valid_snaps}/15"
+                    text = f"Snaps: {valid_snaps}"
                     font = cv2.FONT_HERSHEY_SIMPLEX
                     font_scale = 0.8
                     thickness = 2
-                    color = (0, 255, 0) # Green in BGR
-                    position = (10, 10) # Top-left corner
+                    color = 255
+                    position = (10, 20) # Top-left corner
                     # Put the text on the image
-                    cv2.putText(combined, text, position, font, font_scale, color, thickness, cv2.LINE_AA)
+                    cv2.putText(combined, text, position, font, font_scale, color, thickness)
                     cv2.imshow("Stereo Stream", combined)
                     cv2.imshow("Heatmap", generate_point_heatmap(point_mask))
                     if cv2.waitKey(1) & 0xFF == ord('q'): break
