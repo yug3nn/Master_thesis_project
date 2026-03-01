@@ -17,7 +17,7 @@ from src.utils.camera_streamer import EventReaderThread
 from src.utils.settings import (
     SERIAL_LEFT, SERIAL_RIGHT, STEREO_DELTA_T,
     CHECKERBOARD_ROWS, CHECKERBOARD_COLS, SQUARE_SIZE_MM,
-    MIN_EVENTS_THRESHOLD, MAX_SYNC_DIFF_US, BIAS_INCREMENT_STEREO, IMG_HEIGHT, IMG_WIDTH, DATA_FOLDER
+    MIN_EVENTS_THRESHOLD, MAX_SYNC_DIFF_US, BIAS_INCREMENT_STEREO, IMG_HEIGHT, IMG_WIDTH, DATA_FOLDER, FLAGS_STEREO
 )
 
 def load_calibration(logger):
@@ -43,16 +43,12 @@ def process_3d_measurement(frame_L, frame_R, calib_params, logger):
     mtxL, distL, mtxR, distR, R, T = calib_params
     
     # 1. Find Checkerboard Corners
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-    retL, cornersL = cv2.findChessboardCorners(frame_L, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), None)
-    retR, cornersR = cv2.findChessboardCorners(frame_R, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), None)
+    retL, cornersL = cv2.findChessboardCornersSB(frame_L, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), FLAGS_STEREO)
+    retR, cornersR = cv2.findChessboardCornersSB(frame_R, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), FLAGS_STEREO)
     
     if not (retL and retR):
         # We do not log an error here to prevent terminal spam during Auto-Capture
         return None
-        
-    cv2.cornerSubPix(frame_L, cornersL, (5, 5), (-1, -1), criteria)
-    cv2.cornerSubPix(frame_R, cornersR, (5, 5), (-1, -1), criteria)
     
     # 2. Triangulate to 3D Space
     P1 = np.hstack((np.eye(3), np.zeros((3, 1))))
@@ -65,13 +61,13 @@ def process_3d_measurement(frame_L, frame_R, calib_params, logger):
     pts3D = (pts4D[:3, :] / pts4D[3, :]).T
     
     # Auto-Detect array orientation (Bug fix for diagonal calculation)
-    grid_test = pts3D.reshape(IMG_HEIGHT, IMG_WIDTH, 3)
+    grid_test = pts3D.reshape(CHECKERBOARD_ROWS, CHECKERBOARD_COLS, 3)
     if np.linalg.norm(grid_test[0,0] - grid_test[1,0]) > 0.030: 
-        grid3D = pts3D.reshape(IMG_WIDTH, IMG_HEIGHT, 3)
-        rows, cols = IMG_WIDTH, IMG_HEIGHT
+        grid3D = pts3D.reshape(CHECKERBOARD_COLS, CHECKERBOARD_ROWS, 3)
+        rows, cols = CHECKERBOARD_COLS, CHECKERBOARD_ROWS
     else:
         grid3D = grid_test
-        rows, cols = IMG_HEIGHT, IMG_WIDTH
+        rows, cols = CHECKERBOARD_ROWS, CHECKERBOARD_COLS
     
     # 3. Calculate Depth (Z-axis)
     z_values = pts3D[:, 2] * 1000  # Convert to mm
@@ -255,11 +251,14 @@ def main():
     except KeyboardInterrupt:
         logger.info("Process interrupted by user.")
     finally:
+        # Safely shut down the hardware threads
+        logger.info("Shutting down sensor threads...")
         t_L.stop()
         t_R.stop()
         t_L.join()
         t_R.join()
         cv2.destroyAllWindows()
+        logger.info("Shutdown complete.")
         
         # Save JSON and Generate Plots
         if measurements:

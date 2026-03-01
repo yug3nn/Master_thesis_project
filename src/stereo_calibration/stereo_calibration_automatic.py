@@ -14,7 +14,7 @@ from src.utils.logger_setup import setup_logging
 from src.utils.camera_streamer import EventReaderThread
 from src.utils.settings import (
     CHECKERBOARD_ROWS, CHECKERBOARD_COLS, SQUARE_SIZE_M, COOLDOWN_SECONDS, 
-    STEREO_DELTA_T, MAX_SYNC_DIFF_US, BIAS_INCREMENT_STEREO, SERIAL_LEFT, SERIAL_RIGHT, FLAGS_STEREO
+    STEREO_DELTA_T, MAX_SYNC_DIFF_US, BIAS_INCREMENT_STEREO, SERIAL_LEFT, SERIAL_RIGHT, FLAGS_STEREO, MIN_REQUIRED_SNAPS
 )
 
 def generate_point_heatmap(accumulated_mask):
@@ -99,8 +99,6 @@ def main():
     t_L.start()
     time.sleep(0.5) # Brief warmup
     t_R.start()
-    
-    logger.info("System Online.")
 
     objp = np.zeros((CHECKERBOARD_ROWS * CHECKERBOARD_COLS, 3), np.float32)
     objp[:, :2] = np.mgrid[0:CHECKERBOARD_ROWS, 0:CHECKERBOARD_COLS].T.reshape(-1, 2) * SQUARE_SIZE_M
@@ -154,25 +152,19 @@ def main():
                     proc_L = cv2.bitwise_not(cv2.dilate(im_L, np.ones((3,3))))
                     proc_R = cv2.bitwise_not(cv2.dilate(im_R, np.ones((3,3))))
 
-                    found_L = cv2.checkChessboard(proc_L, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS))
-                    found_R = cv2.checkChessboard(proc_R, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS))
+                    ret_L, corners_L = cv2.findChessboardCornersSB(proc_L, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), FLAGS_STEREO)
+                    ret_R, corners_R = cv2.findChessboardCornersSB(proc_R, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), FLAGS_STEREO)
 
-                    found_L = found_R = True
-
-                    if found_L and found_R:
-                        ret_L, corners_L = cv2.findChessboardCornersSB(proc_L, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), FLAGS_STEREO)
-                        ret_R, corners_R = cv2.findChessboardCornersSB(proc_R, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), FLAGS_STEREO)
-
-                        if ret_L and ret_R:
-                            if time.time() - last_cap > COOLDOWN_SECONDS:
-                                objpoints.append(objp)
-                                imgpoints_L.append(corners_L)
-                                imgpoints_R.append(corners_R)
-                                valid_snaps += 1
-                                last_cap = time.time()
-                                for c in corners_L:
-                                    cv2.circle(point_mask, (int(c[0][0]), int(c[0][1])), 2, 1.0, -1)
-                                logger.info(f"Snap {valid_snaps} captured (Sync diff: {abs(ts_L - ts_R)}us)")
+                    if ret_L and ret_R:
+                        if time.time() - last_cap > COOLDOWN_SECONDS:
+                            objpoints.append(objp)
+                            imgpoints_L.append(corners_L)
+                            imgpoints_R.append(corners_R)
+                            valid_snaps += 1
+                            last_cap = time.time()
+                            for c in corners_L:
+                                cv2.circle(point_mask, (int(c[0][0]), int(c[0][1])), 2, 1.0, -1)
+                            logger.info(f"Snap {valid_snaps} captured (Sync diff: {abs(ts_L - ts_R)}us)")
 
                 if not args.headless:
                     # Prepare the combined frame (L | R)
@@ -193,14 +185,17 @@ def main():
     except KeyboardInterrupt:
         logger.info("Process interrupted by user.")
     finally:
+        # Safely shut down the hardware threads
+        logger.info("Shutting down sensor threads...")
         t_L.stop()
         t_R.stop()
         t_L.join()
         t_R.join()
         cv2.destroyAllWindows()
+        logger.info("Shutdown complete.")
 
     # Final calibration logic
-    if valid_snaps >= 15:
+    if valid_snaps >= MIN_REQUIRED_SNAPS:
         save_points_json(objpoints, imgpoints_L, imgpoints_R, width, height, logger)
         if args.mode == "calibrate":
             logger.info("Starting stereo calibration with outlier rejection...")

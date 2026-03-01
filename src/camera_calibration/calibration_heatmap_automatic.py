@@ -126,7 +126,7 @@ def main():
 
     cv2.destroyAllWindows()
 
-    if valid_snaps >= 20:
+    if valid_snaps >= MIN_REQUIRED_SNAPS:
         save_points_json(args.side, objpoints, imgpoints, width, height, logger)
         
         if args.mode == "calibrate":
