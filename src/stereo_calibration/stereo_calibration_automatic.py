@@ -5,58 +5,17 @@ import time
 import sys
 import os
 import argparse
-import threading
 from datetime import datetime
-from queue import Queue, Empty, Full
-from metavision_core.event_io import EventsIterator
+from queue import Empty
 
 sys.path.append(os.getcwd())
 
 from src.utils.logger_setup import setup_logging
+from src.utils.camera_streamer import EventReaderThread
 from src.utils.settings import (
     CHECKERBOARD_ROWS, CHECKERBOARD_COLS, SQUARE_SIZE_M, COOLDOWN_SECONDS, 
-    STEREO_DELTA_T, MIN_EVENTS_THRESHOLD, MAX_SYNC_DIFF_US, BIAS_INCREMENT_STEREO, SERIAL_LEFT, SERIAL_RIGHT, FLAGS_STEREO
+    STEREO_DELTA_T, MAX_SYNC_DIFF_US, BIAS_INCREMENT_STEREO, SERIAL_LEFT, SERIAL_RIGHT, FLAGS_STEREO
 )
-
-def camera_worker(serial, side, queue, stop_event, logger):
-    """
-    Thread dedicated to fetching events from a single camera as fast as possible.
-    """
-    try:
-        mv_it = EventsIterator(input_path=serial, delta_t=STEREO_DELTA_T)
-        device = mv_it.reader.device if hasattr(mv_it.reader, 'device') else mv_it.reader.get_device()
-        
-        # Configure Hardware Sync (Left=Slave, Right=Master)
-        sync = device.get_i_camera_synchronization()
-        if side == "LEFT":
-            sync.set_mode_slave()
-            logger.info(f"[{side}] Hardware set to SLAVE mode")
-        else:
-            sync.set_mode_master()
-            logger.info(f"[{side}] Hardware set to MASTER mode")
-
-        # Bias configuration
-        biases = device.get_i_ll_biases()
-        if biases:
-            biases.set("bias_diff_on", biases.get("bias_diff_on") + BIAS_INCREMENT_STEREO)
-            biases.set("bias_diff_off", biases.get("bias_diff_off") + BIAS_INCREMENT_STEREO)
-            logger.info(f"[{side}] Biases increased (+{BIAS_INCREMENT_STEREO})")
-
-        for evs in mv_it:
-            if stop_event.is_set():
-                break
-            
-            # Filter Polarity 1 and check threshold
-            evs_filt = evs[evs['p'] == 1]
-            if evs_filt.size >= MIN_EVENTS_THRESHOLD:
-                # Policy: Drop old data to keep latency at minimum
-                if queue.full():
-                    try: queue.get_nowait()
-                    except Empty: pass
-                queue.put((evs_filt, mv_it.get_current_time()))
-                
-    except Exception as e:
-        logger.error(f"Worker {side} critical error: {e}")
 
 def generate_point_heatmap(accumulated_mask):
     """ Generate a jet-colored heatmap based on accumulated corner detections """
@@ -130,17 +89,18 @@ def main():
     mtx_R, dist_R, width_R, height_R = load_prophesee_json("camera_right.json", logger)
     width, height = width_L, height_L
 
-    # Initialize Queues and Threads
-    q_L, q_R = Queue(maxsize=2), Queue(maxsize=2)
-    stop_event = threading.Event()
-    
-    t_L = threading.Thread(target=camera_worker, args=(SERIAL_LEFT, "LEFT", q_L, stop_event, logger))
-    t_R = threading.Thread(target=camera_worker, args=(SERIAL_RIGHT, "RIGHT", q_R, stop_event, logger))
-    
-    # Start threads
+    # --- 1. INITIALIZE CENTRALIZED THREADS ---
+    logger.info("Starting hardware streams via CameraStreamer...")
+    t_L = EventReaderThread(SERIAL_LEFT, STEREO_DELTA_T, role="SLAVE_LEFT", logger=logger, 
+                            bias_increment=BIAS_INCREMENT_STEREO, filter_polarity=1)
+    t_R = EventReaderThread(SERIAL_RIGHT, STEREO_DELTA_T, role="MASTER_RIGHT", logger=logger, 
+                            bias_increment=BIAS_INCREMENT_STEREO, filter_polarity=1)
+
     t_L.start()
-    time.sleep(0.5)
+    time.sleep(0.5) # Brief warmup
     t_R.start()
+    
+    logger.info("System Online.")
 
     objp = np.zeros((CHECKERBOARD_ROWS * CHECKERBOARD_COLS, 3), np.float32)
     objp[:, :2] = np.mgrid[0:CHECKERBOARD_ROWS, 0:CHECKERBOARD_COLS].T.reshape(-1, 2) * SQUARE_SIZE_M
@@ -152,7 +112,7 @@ def main():
     logger.info("Stereo acquisition started. Press 'q' to stop.")
     
     try:
-        while not stop_event.is_set():
+        while t_L.running and t_R.running:
             # Mandatory GUI refresher for OpenCV
             if not args.headless:
                 if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -160,8 +120,8 @@ def main():
                     
             try:
                 # Fetch synchronized packets from queues
-                data_L = q_L.get(timeout=0.01)
-                data_R = q_R.get(timeout=0.01)
+                data_L = t_L.q.get(timeout=0.01)
+                data_R = t_R.q.get(timeout=0.01)
             except Empty:
                 continue
 
@@ -174,13 +134,13 @@ def main():
                 if ts_L < ts_R:
                     logger.debug(f"Flushing Left... diff: {ts_L - ts_R}")
                     try:
-                        data_L = q_L.get(timeout=0.01)
+                        data_L = t_L.q.get(timeout=0.01)
                         ts_L = data_L[1]
                     except Empty: break 
                 else:
                     logger.debug(f"Flushing Right... diff: {ts_L - ts_R}")
                     try:
-                        data_R = q_R.get(timeout=0.01)
+                        data_R = t_R.q.get(timeout=0.01)
                         ts_R = data_R[1]
                     except Empty: break
 
@@ -233,7 +193,8 @@ def main():
     except KeyboardInterrupt:
         logger.info("Process interrupted by user.")
     finally:
-        stop_event.set()
+        t_L.stop()
+        t_R.stop()
         t_L.join()
         t_R.join()
         cv2.destroyAllWindows()

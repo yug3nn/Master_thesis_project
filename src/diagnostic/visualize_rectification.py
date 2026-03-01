@@ -5,67 +5,14 @@ import os
 import glob
 import argparse
 import sys
-import threading
-import queue
+from queue import Empty
 import time
 
 # Add the project root to sys.path to load the custom logger
 sys.path.append(os.getcwd())
 from src.utils.logger_setup import setup_logging
-from metavision_core.event_io import EventsIterator
-from src.utils.settings import SERIAL_LEFT, SERIAL_RIGHT, STEREO_DELTA_T
-
-class EventReaderThread(threading.Thread):
-    """
-    Dedicated thread for reading events from a single camera.
-    Prevents V4L2 buffer overflows and allows Master-Slave synchronization.
-    """
-    def __init__(self, serial, delta_t, role, logger):
-        super().__init__()
-        self.serial = serial
-        self.delta_t = delta_t
-        self.role = role
-        self.logger = logger
-        # Queue to hold the latest event chunks
-        self.q = queue.Queue(maxsize=3)
-        self.running = False
-        self.error = False
-
-    def run(self):
-        self.running = True
-        try:
-            self.logger.info(f"[{self.role}] Initializing sensor on {self.serial}...")
-            mv_it = EventsIterator(input_path=self.serial, delta_t=self.delta_t)
-            
-            self.logger.info(f"[{self.role}] Stream started successfully.")
-            for evs in mv_it:
-                if not self.running:
-                    break
-                    
-                # If the queue is full, drop the oldest frame to maintain Real-Time performance
-                if self.q.full():
-                    try:
-                        self.q.get_nowait()
-                    except queue.Empty:
-                        pass
-                
-                self.q.put(evs)
-                
-        except Exception as e:
-            self.logger.error(f"[{self.role}] Stream error: {e}")
-            self.error = True
-        
-        self.logger.info(f"[{self.role}] Thread terminated.")
-
-    def stop(self):
-        self.running = False
-        # Clear the queue to unblock any waiting threads
-        while not self.q.empty():
-            try:
-                self.q.get_nowait()
-            except queue.Empty:
-                break
-
+from src.utils.camera_streamer import EventReaderThread
+from src.utils.settings import SERIAL_LEFT, SERIAL_RIGHT, STEREO_DELTA_T, BIAS_INCREMENT_STEREO, MAX_SYNC_DIFF_US
 
 def load_stereo_calibration(logger):
     """Loads all intrinsic and extrinsic matrices and computes rectification maps."""
@@ -181,74 +128,86 @@ def run_live_mode(logger, maps, img_size):
     mapL_x, mapL_y, mapR_x, mapR_y = maps
     h, w = img_size
 
-    # 1. Initialize Threaded Readers
-    master_thread = EventReaderThread(SERIAL_LEFT, STEREO_DELTA_T, "MASTER_LEFT", logger)
-    slave_thread = EventReaderThread(SERIAL_RIGHT, STEREO_DELTA_T, "SLAVE_RIGHT", logger)
+    # --- 1. INITIALIZE CENTRALIZED THREADS ---
+    logger.info("Starting hardware streams via CameraStreamer...")
+    t_L = EventReaderThread(SERIAL_LEFT, STEREO_DELTA_T, role="SLAVE_LEFT", logger=logger, 
+                            bias_increment=BIAS_INCREMENT_STEREO, filter_polarity=1)
+    t_R = EventReaderThread(SERIAL_RIGHT, STEREO_DELTA_T, role="MASTER_RIGHT", logger=logger, 
+                            bias_increment=BIAS_INCREMENT_STEREO, filter_polarity=1)
 
-    master_thread.start()
-    slave_thread.start()
-
-    logger.info("Waiting for sensors to warm up...")
-    time.sleep(1.0) # Brief pause to let hardware buffers fill
-
-    if master_thread.error or slave_thread.error:
-        logger.error("Failed to establish stream from one or both cameras. Aborting.")
-        master_thread.stop()
-        slave_thread.stop()
-        sys.exit(1)
+    t_L.start()
+    time.sleep(0.5) # Brief warmup
+    t_R.start()
 
     logger.info("System Online. Press 'q' to quit.")
 
     # 2. Synchronized Processing Loop
     try:
-        while master_thread.running and slave_thread.running:
+        while t_L.running and t_R.running:
             try:
                 # The MASTER dictates the loop timing. We wait for its packet first.
-                evs_L = master_thread.q.get(timeout=1.0)
+                evs_L = t_L.q.get(timeout=1.0)
                 # The SLAVE is retrieved immediately after.
-                evs_R = slave_thread.q.get(timeout=1.0)
-            except queue.Empty:
+                evs_R = t_R.q.get(timeout=1.0)
+            except Empty:
                 # Timeout occurred, loop again or check for errors
                 continue
 
-            # Render Left Frame
-            frame_L = np.zeros((h, w), dtype=np.uint8)
-            if evs_L.size > 0: 
-                frame_L[evs_L['y'], evs_L['x']] = 255
-            frame_L = cv2.cvtColor(frame_L, cv2.COLOR_GRAY2BGR)
-            
-            # Render Right Frame
-            frame_R = np.zeros((h, w), dtype=np.uint8)
-            if evs_R.size > 0: 
-                frame_R[evs_R['y'], evs_R['x']] = 255
-            frame_R = cv2.cvtColor(frame_R, cv2.COLOR_GRAY2BGR)
+            # --- ACTIVE ALIGNMENT ---
+            while abs(ts_L - ts_R) > MAX_SYNC_DIFF_US:
+                logger.info(f"Syncing... Offset: {ts_L - ts_R}us")
+                if ts_L < ts_R:
+                    logger.debug(f"Flushing Left... diff: {ts_L - ts_R}")
+                    try:
+                        data_L = t_L.q.get(timeout=0.01)
+                        ts_L = data_L[1]
+                    except Empty: break 
+                else:
+                    logger.debug(f"Flushing Right... diff: {ts_L - ts_R}")
+                    try:
+                        data_R = t_R.q.get(timeout=0.01)
+                        ts_R = data_R[1]
+                    except Empty: break
 
-            # Apply Geometric Remapping (Undistortion + Epipolar Alignment)
-            rect_L = cv2.remap(frame_L, mapL_x, mapL_y, cv2.INTER_LINEAR)
-            rect_R = cv2.remap(frame_R, mapR_x, mapR_y, cv2.INTER_LINEAR)
+            if abs(ts_L - ts_R) <= MAX_SYNC_DIFF_US:
+                # Render Left Frame
+                frame_L = np.zeros((h, w), dtype=np.uint8)
+                if evs_L.size > 0: 
+                    frame_L[evs_L['y'], evs_L['x']] = 255
+                frame_L = cv2.cvtColor(frame_L, cv2.COLOR_GRAY2BGR)
+                
+                # Render Right Frame
+                frame_R = np.zeros((h, w), dtype=np.uint8)
+                if evs_R.size > 0: 
+                    frame_R[evs_R['y'], evs_R['x']] = 255
+                frame_R = cv2.cvtColor(frame_R, cv2.COLOR_GRAY2BGR)
 
-            # Concatenate and add reference lines
-            stereo_view = cv2.hconcat([rect_L, rect_R])
-            stereo_view = draw_epipolar_guides(stereo_view, num_lines=20)
-            
-            cv2.putText(stereo_view, "LIVE RECTIFICATION (Master-Slave Synced)", (10, 20), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                # Apply Geometric Remapping (Undistortion + Epipolar Alignment)
+                rect_L = cv2.remap(frame_L, mapL_x, mapL_y, cv2.INTER_LINEAR)
+                rect_R = cv2.remap(frame_R, mapR_x, mapR_y, cv2.INTER_LINEAR)
 
-            cv2.imshow("Live Stereo Rectification", stereo_view)
+                # Concatenate and add reference lines
+                stereo_view = cv2.hconcat([rect_L, rect_R])
+                stereo_view = draw_epipolar_guides(stereo_view, num_lines=20)
+                
+                cv2.putText(stereo_view, "LIVE RECTIFICATION (Master-Slave Synced)", (10, 20), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                logger.info("Shutdown signal received.")
-                break
+                cv2.imshow("Live Stereo Rectification", stereo_view)
+
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    logger.info("Shutdown signal received.")
+                    break
 
     except KeyboardInterrupt:
         logger.info("Interrupted by user.")
     finally:
         # Safely shut down the hardware threads
         logger.info("Shutting down sensor threads...")
-        master_thread.stop()
-        slave_thread.stop()
-        master_thread.join()
-        slave_thread.join()
+        t_L.stop()
+        t_R.stop()
+        t_L.join()
+        t_R.join()
         cv2.destroyAllWindows()
         logger.info("Shutdown complete.")
 

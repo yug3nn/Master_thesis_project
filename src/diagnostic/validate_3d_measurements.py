@@ -3,8 +3,7 @@ import numpy as np
 import json
 import os
 import sys
-import threading
-from queue import Queue, Empty
+from queue import Empty
 import time
 import datetime
 import matplotlib
@@ -14,58 +13,12 @@ import matplotlib.pyplot as plt
 # Add the project root to sys.path
 sys.path.append(os.getcwd())
 from src.utils.logger_setup import setup_logging
-from metavision_core.event_io import EventsIterator
+from src.utils.camera_streamer import EventReaderThread
 from src.utils.settings import (
     SERIAL_LEFT, SERIAL_RIGHT, STEREO_DELTA_T,
     CHECKERBOARD_ROWS, CHECKERBOARD_COLS, SQUARE_SIZE_MM,
     MIN_EVENTS_THRESHOLD, MAX_SYNC_DIFF_US, BIAS_INCREMENT_STEREO, IMG_HEIGHT, IMG_WIDTH, DATA_FOLDER
 )
-
-def camera_worker(serial, side, queue_obj, stop_event, logger):
-    """
-    Thread dedicated to fetching events from a single camera as fast as possible.
-    Includes Hardware Synchronization setup and Polarity filtering.
-    """
-    try:
-        logger.info(f"[{side}] Initializing sensor on {serial}...")
-        mv_it = EventsIterator(input_path=serial, delta_t=STEREO_DELTA_T)
-        device = mv_it.reader.device if hasattr(mv_it.reader, 'device') else mv_it.reader.get_device()
-        
-        # Configure Hardware Synchronization
-        sync = device.get_i_camera_synchronization()
-        if side == "LEFT":
-            sync.set_mode_slave()
-            logger.info(f"[{side}] Hardware set to SLAVE mode")
-        else:
-            sync.set_mode_master()
-            logger.info(f"[{side}] Hardware set to MASTER mode")
-
-        # Bias configuration for sharper edges
-        biases = device.get_i_ll_biases()
-        if biases:
-            biases.set("bias_diff_on", biases.get("bias_diff_on") + BIAS_INCREMENT_STEREO)
-            biases.set("bias_diff_off", biases.get("bias_diff_off") + BIAS_INCREMENT_STEREO)
-            logger.info(f"[{side}] Biases increased (+{BIAS_INCREMENT_STEREO})")
-
-        for evs in mv_it:
-            if stop_event.is_set():
-                break
-            
-            # Filter Polarity 1 (positive changes) and check threshold
-            evs_filt = evs[evs['p'] == 1]
-            if evs_filt.size >= MIN_EVENTS_THRESHOLD:
-                # Policy: Drop old data to keep latency at minimum
-                if queue_obj.full():
-                    try: 
-                        queue_obj.get_nowait()
-                    except Empty: 
-                        pass
-                # Store tuple: (events, timestamp)
-                queue_obj.put((evs_filt, mv_it.get_current_time()))
-                
-    except Exception as e:
-        logger.error(f"Worker {side} critical error: {e}")
-        stop_event.set()
 
 def load_calibration(logger):
     """Loads intrinsic and extrinsic parameters for 3D triangulation."""
@@ -200,26 +153,25 @@ def main():
     measurements = []
     capture_requested = False
     
-    # Initialize Queues and Thread Event
-    q_L = Queue(maxsize=3)
-    q_R = Queue(maxsize=3)
-    stop_event = threading.Event()
-    
-    t_L = threading.Thread(target=camera_worker, args=(SERIAL_LEFT, "LEFT", q_L, stop_event, logger))
-    t_R = threading.Thread(target=camera_worker, args=(SERIAL_RIGHT, "RIGHT", q_R, stop_event, logger))
+    # --- 1. INITIALIZE CENTRALIZED THREADS ---
+    logger.info("Starting hardware streams via CameraStreamer...")
+    t_L = EventReaderThread(SERIAL_LEFT, STEREO_DELTA_T, role="SLAVE_LEFT", logger=logger, 
+                            bias_increment=BIAS_INCREMENT_STEREO, filter_polarity=1)
+    t_R = EventReaderThread(SERIAL_RIGHT, STEREO_DELTA_T, role="MASTER_RIGHT", logger=logger, 
+                            bias_increment=BIAS_INCREMENT_STEREO, filter_polarity=1)
 
     t_L.start()
-    time.sleep(0.5)
+    time.sleep(0.5) # Brief warmup
     t_R.start()
     
     logger.info("Ready. Press [SPACE] to start Auto-Capture. Press [Q] to save & quit.")
 
     try:
-        while not stop_event.is_set():
+        while t_L.running and t_R.running:
             try:
                 # Fetch packets with timestamps
-                data_L = q_L.get(timeout=0.01)
-                data_R = q_R.get(timeout=0.01)
+                data_L = t_L.q.get(timeout=0.01)
+                data_R = t_R.q.get(timeout=0.01)
             except Empty:
                 continue
 
@@ -230,13 +182,13 @@ def main():
             while abs(ts_L - ts_R) > MAX_SYNC_DIFF_US:
                 if ts_L < ts_R:
                     try:
-                        data_L = q_L.get(timeout=0.01)
+                        data_L = t_L.q.get(timeout=0.01)
                         ts_L = data_L[1]
                     except Empty: 
                         break 
                 else:
                     try:
-                        data_R = q_R.get(timeout=0.01)
+                        data_R = t_R.q.get(timeout=0.01)
                         ts_R = data_R[1]
                     except Empty: 
                         break
@@ -303,7 +255,8 @@ def main():
     except KeyboardInterrupt:
         logger.info("Process interrupted by user.")
     finally:
-        stop_event.set()
+        t_L.stop()
+        t_R.stop()
         t_L.join()
         t_R.join()
         cv2.destroyAllWindows()
