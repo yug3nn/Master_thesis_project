@@ -10,12 +10,7 @@ from metavision_core.event_io import EventsIterator
 # Add the current working directory (project root) to sys.path
 sys.path.append(os.getcwd())
 from src.utils.logger_setup import setup_logging
-
-# --- CONFIGURATION ---
-DELTA_T = 30000 
-
-SERIAL_LEFT = "genx320 11-003c"  
-SERIAL_RIGHT = "genx320 10-003c" 
+from src.utils.settings import STEREO_DELTA_T, SERIAL_LEFT, SERIAL_RIGHT
 
 def load_calibration(filepath):
     """
@@ -102,7 +97,7 @@ def main():
     # Safely initialize the camera
     logger.info(f"Attempting to open camera with serial: {serial}")
     try:
-        mv_it = EventsIterator(input_path=serial, delta_t=DELTA_T)
+        mv_it = EventsIterator(input_path=serial, delta_t=STEREO_DELTA_T)
     except Exception as e:
         logger.error(f"Failed to open camera '{serial}'. Is it connected and not in use? Error details: {e}")
         sys.exit(1)

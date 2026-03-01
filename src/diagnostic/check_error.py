@@ -9,11 +9,7 @@ import sys
 # Add the current working directory (project root) to sys.path for custom modules
 sys.path.append(os.getcwd())
 from src.utils.logger_setup import setup_logging
-
-# --- CONFIGURATION ---
-DATA_FOLDER = 'data_analysis'
-SQUARE_SIZE_REAL = 0.0165  # 16.5 mm
-# ---------------------
+from src.utils.settings import DATA_FOLDER, SQUARE_SIZE_M
 
 def get_latest_json():
     """Retrieves the latest raw dataset to extract image points."""
@@ -90,11 +86,11 @@ def generate_validation_plots(logger):
             for c in range(cols):
                 if c < cols - 1: # Horizontal edge
                     dist = np.linalg.norm(grid3D[r, c] - grid3D[r, c+1])
-                    errors.append(abs(dist - SQUARE_SIZE_REAL))
+                    errors.append(abs(dist - SQUARE_SIZE_M))
                     positions.append((gridImg[r, c] + gridImg[r, c+1]) / 2)
                 if r < rows - 1: # Vertical edge
                     dist = np.linalg.norm(grid3D[r, c] - grid3D[r+1, c])
-                    errors.append(abs(dist - SQUARE_SIZE_REAL))
+                    errors.append(abs(dist - SQUARE_SIZE_M))
                     positions.append((gridImg[r, c] + gridImg[r+1, c]) / 2)
 
     errors_mm = np.array(errors) * 1000

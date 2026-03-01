@@ -6,36 +6,24 @@ import sys
 import os
 import argparse
 import threading
+from datetime import datetime
 from queue import Queue, Empty, Full
 from metavision_core.event_io import EventsIterator
 
 sys.path.append(os.getcwd())
 
 from src.utils.logger_setup import setup_logging
-from datetime import datetime
-
-# --- CONFIGURATION ---
-CHECKERBOARD_ROWS = 6       
-CHECKERBOARD_COLS = 9       
-SQUARE_SIZE_M = 0.0165      
-COOLDOWN_SECONDS = 2.0      
-
-DELTA_T_VAL = 30000         
-MIN_EVENTS_THRESHOLD = 10 
-MAX_SYNC_DIFF_US = 200  
-BIAS_INCREMENT = 10     
-
-SERIAL_LEFT = "genx320 11-003c"  
-SERIAL_RIGHT = "genx320 10-003c" 
-
-FLAGS_SB = cv2.CALIB_CB_EXHAUSTIVE | cv2.CALIB_CB_ACCURACY | cv2.CALIB_CB_NORMALIZE_IMAGE
+from src.utils.settings import (
+    CHECKERBOARD_ROWS, CHECKERBOARD_COLS, SQUARE_SIZE_M, COOLDOWN_SECONDS, 
+    STEREO_DELTA_T, MIN_EVENTS_THRESHOLD, MAX_SYNC_DIFF_US, BIAS_INCREMENT_STEREO, SERIAL_LEFT, SERIAL_RIGHT, FLAGS_STEREO
+)
 
 def camera_worker(serial, side, queue, stop_event, logger):
     """
     Thread dedicated to fetching events from a single camera as fast as possible.
     """
     try:
-        mv_it = EventsIterator(input_path=serial, delta_t=DELTA_T_VAL)
+        mv_it = EventsIterator(input_path=serial, delta_t=STEREO_DELTA_T)
         device = mv_it.reader.device if hasattr(mv_it.reader, 'device') else mv_it.reader.get_device()
         
         # Configure Hardware Sync (Left=Slave, Right=Master)
@@ -50,9 +38,9 @@ def camera_worker(serial, side, queue, stop_event, logger):
         # Bias configuration
         biases = device.get_i_ll_biases()
         if biases:
-            biases.set("bias_diff_on", biases.get("bias_diff_on") + BIAS_INCREMENT)
-            biases.set("bias_diff_off", biases.get("bias_diff_off") + BIAS_INCREMENT)
-            logger.info(f"[{side}] Biases increased (+{BIAS_INCREMENT})")
+            biases.set("bias_diff_on", biases.get("bias_diff_on") + BIAS_INCREMENT_STEREO)
+            biases.set("bias_diff_off", biases.get("bias_diff_off") + BIAS_INCREMENT_STEREO)
+            logger.info(f"[{side}] Biases increased (+{BIAS_INCREMENT_STEREO})")
 
         for evs in mv_it:
             if stop_event.is_set():
@@ -212,8 +200,8 @@ def main():
                     found_L = found_R = True
 
                     if found_L and found_R:
-                        ret_L, corners_L = cv2.findChessboardCornersSB(proc_L, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), FLAGS_SB)
-                        ret_R, corners_R = cv2.findChessboardCornersSB(proc_R, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), FLAGS_SB)
+                        ret_L, corners_L = cv2.findChessboardCornersSB(proc_L, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), FLAGS_STEREO)
+                        ret_R, corners_R = cv2.findChessboardCornersSB(proc_R, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), FLAGS_STEREO)
 
                         if ret_L and ret_R:
                             if time.time() - last_cap > COOLDOWN_SECONDS:

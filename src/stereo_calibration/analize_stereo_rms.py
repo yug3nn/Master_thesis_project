@@ -9,10 +9,7 @@ import sys
 # Add the current working directory (project root) to sys.path
 sys.path.append(os.getcwd())
 from src.utils.logger_setup import setup_logging
-
-# --- GLOBAL CONFIGURATION ---
-SQUARE_SIZE_REAL = 0.0165  # 16.5 mm
-# ----------------------------
+from src.utils.settings import SQUARE_SIZE_MM
 
 def sort_snaps_by_fps(img_pts_L, img_pts_R):
     """
@@ -87,7 +84,7 @@ def evaluate_metric_error(mtxL, distL, mtxR, distR, R, T, all_img_pts_L, all_img
                     raw_distances.append(np.linalg.norm(grid3D[r, c] - grid3D[r+1, c]) * 1000)
     
     raw_distances = np.array(raw_distances)
-    errors = np.abs(raw_distances - (SQUARE_SIZE_REAL * 1000))
+    errors = np.abs(raw_distances - (SQUARE_SIZE_MM))
     
     return np.mean(errors), np.median(errors), np.mean(raw_distances)
 
@@ -113,7 +110,7 @@ def run_two_step_analysis(logger):
 
     # Scale alignment for objpoints (ensures metric accuracy)
     json_square_size = np.linalg.norm(obj_pts_raw[0][0] - obj_pts_raw[0][1])
-    scale_factor = SQUARE_SIZE_REAL / json_square_size
+    scale_factor = SQUARE_SIZE_MM / json_square_size
     obj_pts_raw = [pts * scale_factor for pts in obj_pts_raw]
 
     def load_cam(side):

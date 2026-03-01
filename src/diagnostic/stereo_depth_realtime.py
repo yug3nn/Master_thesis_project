@@ -2,14 +2,15 @@ import cv2
 import os
 import numpy as np
 import json
-import time
+import sys
 from metavision_core.event_io import EventsIterator
 
-# --- CONFIGURAZIONE ---
-SERIAL_LEFT = "genx320 11-003c"   # SLAVE
-SERIAL_RIGHT = "genx320 10-003c"  # MASTER
-delta_t_val = 30000               # 30ms 
-BIAS_VAL = 60                     
+sys.path.append(os.getcwd())
+
+from src.utils.settings import (
+    SERIAL_LEFT, SERIAL_RIGHT, STEREO_DELTA_T, BIAS_INCREMENT_STEREO
+)
+                  
 DISPLAY_SCALE = 3.0               # Zoom 3x
 
 def load_json_params():
@@ -48,8 +49,9 @@ def configure_camera(iterator, mode):
         if mode == 'master': i_sync.set_mode_master()
         else: i_sync.set_mode_slave()
         biases = device.get_i_ll_biases()
-        biases.set("bias_diff_on", BIAS_VAL)
-        biases.set("bias_diff_off", BIAS_VAL)
+        if biases:
+            biases.set("bias_diff_on", biases.get("bias_diff_on") + BIAS_INCREMENT_STEREO)
+            biases.set("bias_diff_off", biases.get("bias_diff_off") + BIAS_INCREMENT_STEREO)
     except: pass
 
 def get_frame(evs, width, height):
@@ -65,9 +67,9 @@ def nothing(x): pass
 def main():
     map1_L, map2_L, map1_R, map2_R, w, h = load_json_params()
     
-    mv_L = EventsIterator(input_path=SERIAL_LEFT, delta_t=delta_t_val)
+    mv_L = EventsIterator(input_path=SERIAL_LEFT, delta_t=STEREO_DELTA_T)
     configure_camera(mv_L, 'slave')
-    mv_R = EventsIterator(input_path=SERIAL_RIGHT, delta_t=delta_t_val)
+    mv_R = EventsIterator(input_path=SERIAL_RIGHT, delta_t=STEREO_DELTA_T)
     configure_camera(mv_R, 'master')
     
     cv2.namedWindow("Clean Depth", cv2.WINDOW_NORMAL)

@@ -11,6 +11,7 @@ import sys
 sys.path.append(os.getcwd())
 
 from src.utils.logger_setup import setup_logging
+from src.utils.settings import FLAGS
 
 def sort_snaps_by_fps(imgpoints_all):
     """
@@ -59,7 +60,6 @@ def analyze_rms_fps_asymptotic(objpoints_all, imgpoints_all, img_size, camera_si
     img_pts = [imgpoints_all[i] for i in sorted_idx]
     
     # 2. BATCH PROCESSING (Iterative evaluation)
-    flags = cv2.CALIB_FIX_K3
     OUTLIER_MULTIPLIER = 1.5
 
     stats_snapshots = []
@@ -81,7 +81,7 @@ def analyze_rms_fps_asymptotic(objpoints_all, imgpoints_all, img_size, camera_si
 
         try:
             # Stage 1: Initial Calibration
-            ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(curr_obj, curr_img, img_size, None, None, flags=flags)
+            ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(curr_obj, curr_img, img_size, None, None, flags=FLAGS)
 
             # Stage 2: Refinement (Outlier Removal based on Reprojection Error)
             errors = []
@@ -96,7 +96,7 @@ def analyze_rms_fps_asymptotic(objpoints_all, imgpoints_all, img_size, camera_si
             ref_img = [curr_img[i] for i in refined_indices]
 
             # Re-calibrate with clean data
-            ret_r, mtx_r, dist_r, rvecs_r, tvecs_r = cv2.calibrateCamera(ref_obj, ref_img, img_size, None, None, flags=flags)
+            ret_r, mtx_r, dist_r, rvecs_r, tvecs_r = cv2.calibrateCamera(ref_obj, ref_img, img_size, None, None, flags=FLAGS)
 
             # Calculate Standard Deviation for the plot
             ref_errors = []

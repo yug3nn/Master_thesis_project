@@ -5,26 +5,17 @@ import time
 import os
 import argparse
 from metavision_core.event_io import EventsIterator
+from datetime import datetime
 import sys
 
 # Adds the current working directory (project root) to sys.path
 sys.path.append(os.getcwd())
 
 from src.utils.logger_setup import setup_logging
-from datetime import datetime
-
-# --- CONFIGURATION ---
-CHECKERBOARD_ROWS = 6     
-CHECKERBOARD_COLS = 9     
-SQUARE_SIZE_M = 0.0165    
-COOLDOWN_SECONDS = 3.0
-BIAS_INCREMENT = 0       
-DELTA_T = 20000
-MAX_SINGLE_SNAP_RMS = 1.0  
-MIN_REQUIRED_SNAPS = 15    
-
-SERIAL_LEFT = "genx320 11-003c"  
-SERIAL_RIGHT = "genx320 10-003c" 
+from src.utils.settings import (
+    SERIAL_LEFT, SERIAL_RIGHT, DELTA_T, CHECKERBOARD_ROWS, CHECKERBOARD_COLS,
+    SQUARE_SIZE_M, COOLDOWN_SECONDS, MAX_SINGLE_SNAP_RMS, MIN_REQUIRED_SNAPS, BIAS_INCREMENT
+)   
 
 def configure_biases(iterator, logger):
     """ Hardware access to increase bias_diff_on/off by a fixed offset """
