@@ -7,10 +7,10 @@ from metavision_core.event_io import EventsIterator
 class EventReaderThread(threading.Thread):
     """
     Universal multi-thread engine for Prophesee event camera acquisition.
-    Automatically handles: Hardware Sync, Bias Tuning, Polarity Filtering, and Anti-Latency.
+    Automatically handles: Hardware Sync, Bias Tuning, Polarity Filtering, Anti-Latency, and RAW Logging.
     """
     def __init__(self, serial, delta_t, role="STANDALONE", logger=None, 
-                 max_queue_size=2, bias_increment=0, filter_polarity=None):
+                 max_queue_size=2, bias_increment=0, filter_polarity=None, raw_file_path=None):
         super().__init__()
         self.serial = serial
         self.delta_t = delta_t
@@ -18,6 +18,7 @@ class EventReaderThread(threading.Thread):
         self.logger = logger
         self.bias_increment = bias_increment
         self.filter_polarity = filter_polarity  # 1 (positive), 0 (negative), None (all)
+        self.raw_file_path = raw_file_path      # <--- NUOVO PARAMETRO PER IL RAW
         
         self.q = queue.Queue(maxsize=max_queue_size)
         self.running = False
@@ -55,24 +56,37 @@ class EventReaderThread(threading.Thread):
                     if self.logger: 
                         self.logger.info(f"[{self.role}] Contrast increased (+{self.bias_increment})")
 
+            # --- RAW RECORDING SETUP (Avvio automatico alla partenza) ---
+            events_stream = device.get_i_events_stream()
+            if self.raw_file_path and events_stream:
+                events_stream.log_raw_data(self.raw_file_path)
+                if self.logger:
+                    self.logger.info(f"[{self.role}] Native RAW recording started -> {self.raw_file_path}")
+
             # --- ACQUISITION LOOP ---
             for evs in mv_it:
                 if not self.running:
                     break
                 
-                # Apply polarity filter if requested (e.g., 1 for bright edges only)
+                # Apply polarity filter if requested
                 if self.filter_polarity is not None:
                     evs = evs[evs['p'] == self.filter_polarity]
 
-                # Anti-Latency Policy: if the queue is full, drop the oldest frame
+                # Anti-Latency Policy
                 if self.q.full():
                     try: 
                         self.q.get_nowait()
                     except queue.Empty: 
                         pass
                 
-                # Insert tuple into the queue: (events, timestamp_microseconds)
+                # Insert tuple into the queue
                 self.q.put((evs, mv_it.get_current_time()))
+                
+            # --- STOP RAW RECORDING (Chiusura sicura) ---
+            if self.raw_file_path and events_stream:
+                events_stream.stop_log_raw_data()
+                if self.logger:
+                    self.logger.info(f"[{self.role}] Native RAW recording securely stopped.")
                 
         except Exception as e:
             if self.logger:

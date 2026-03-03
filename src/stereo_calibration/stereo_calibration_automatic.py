@@ -187,10 +187,10 @@ def main():
     finally:
         # Safely shut down the hardware threads
         logger.info("Shutting down sensor threads...")
-        t_L.stop()
         t_R.stop()
-        t_L.join()
+        t_L.stop()
         t_R.join()
+        t_L.join()
         cv2.destroyAllWindows()
         logger.info("Shutdown complete.")
 

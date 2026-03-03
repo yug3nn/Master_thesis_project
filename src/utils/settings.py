@@ -13,6 +13,7 @@ IMG_WIDTH = 320
 IMG_HEIGHT = 320
 DELTA_T = 20000                  # Accumulation window in microseconds
 STEREO_DELTA_T = 30000           # Accumulation window in microseconds for stereo system
+TRACKER_DELTA_T = 10000          # Accumulation window in microseconds for tracking
 
 # --- CALIBRATION BOARD ---
 CHECKERBOARD_ROWS = 6     
@@ -28,6 +29,7 @@ MIN_EVENTS_THRESHOLD = 10       #
 MAX_SYNC_DIFF_US = 200          #
 BIAS_INCREMENT = 0              #
 BIAS_INCREMENT_STEREO = 10      #
+BIAS_INCREMENT_TRACKER = 10     #
 FLAGS = cv2.CALIB_FIX_K3        # Calibration flag to fix the K3 distortion coefficient
 FLAGS_STEREO = cv2.CALIB_CB_EXHAUSTIVE | cv2.CALIB_CB_ACCURACY | cv2.CALIB_CB_NORMALIZE_IMAGE
 
@@ -35,3 +37,4 @@ FLAGS_STEREO = cv2.CALIB_CB_EXHAUSTIVE | cv2.CALIB_CB_ACCURACY | cv2.CALIB_CB_NO
 DATA_FOLDER = "data_analysis"   #
 CONFIG_FOLDER = "config"
 LOG_FOLDER = "logs"
+RECORD_FOLDER = "data"
