@@ -16,10 +16,10 @@ from src.utils.settings import (
 )
 
 def render_events(events, width=IMG_WIDTH, height=IMG_HEIGHT):
-    """ Converte l'array di eventi in un'immagine visualizzabile da OpenCV """
+    """ Converts the array of events into an image that can be displayed by OpenCV """
     img = np.zeros((height, width, 3), dtype=np.uint8)
     if events is not None and len(events) > 0:
-        # Disegna gli eventi in bianco su sfondo nero
+        # Draw the events in white on a black background
         img[events['y'], events['x']] = 255
     return img
 
@@ -34,7 +34,7 @@ def main():
     logger = setup_logging("record_stereo")
     logger.info("Starting multi-thread stereo recording...")
 
-    # Passiamo il raw_file_path direttamente ai thread!
+    # Pass the raw_file_path directly to the threads!
     t_L = EventReaderThread(SERIAL_LEFT, TRACKER_DELTA_T, role="SLAVE_LEFT", logger=logger, 
                             bias_increment=BIAS_INCREMENT_TRACKER, filter_polarity=1,
                             raw_file_path=file_L)
@@ -44,7 +44,7 @@ def main():
                             raw_file_path=file_R)
 
     t_L.start()
-    time.sleep(0.5) # Warmup per il clock di sync
+    time.sleep(0.5) # Warmup for the sync clock
     t_R.start()
 
     print("\n>>> RECORDING STARTED AND LIVE PREVIEW RUNNING <<<")
@@ -52,27 +52,21 @@ def main():
     print(">>> PRESS 'ENTER' IN THIS TERMINAL TO STOP AND SAVE...\n")
     
     try:
-        # Loop non bloccante per visualizzare il video e aspettare l'INVIO
+        # Non-blocking loop to display the video and wait for ENTER
         while True:
-            # Recupera gli eventi dalle code (se disponibili)
+            # Retrieve events from the queues (if available)
             try:
                 evs_L, _ = t_L.q.get_nowait()
                 evs_R, _ = t_R.q.get_nowait()
                 cv2.imshow("Preview", np.hstack([render_events(evs_L), render_events(evs_R)]))
             except queue.Empty:
                 pass
-                
-            try:
-                evs_R, _ = t_R.q.get_nowait()
-                cv2.imshow("Preview - MASTER RIGHT", render_events(evs_R))
-            except queue.Empty:
-                pass
 
-            cv2.waitKey(10) # Necessario per aggiornare le finestre OpenCV
+            cv2.waitKey(10) # Necessary to update OpenCV windows
 
-            # Controlla se l'utente ha premuto INVIO nel terminale (solo su Linux/Mac/Raspberry)
+            # Check if the user pressed ENTER in the terminal (Linux/Mac/Raspberry Pi only)
             if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
-                input() # Consuma il tasto premuto
+                input() # Consume the pressed key
                 break
 
     except KeyboardInterrupt:
@@ -80,7 +74,7 @@ def main():
     finally:
         print("\n[CMD] Stop signal received. Saving and shutting down...")
         
-        # Fermando i thread, verranno chiusi automaticamente anche i file RAW
+        # By stopping the threads, the RAW files will also be closed automatically
         t_R.stop()
         t_L.stop()
         
