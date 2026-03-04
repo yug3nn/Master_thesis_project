@@ -18,7 +18,7 @@ TRACKER_DELTA_T = 10000          # Accumulation window in microseconds for track
 # --- CALIBRATION BOARD ---
 CHECKERBOARD_ROWS = 6     
 CHECKERBOARD_COLS = 9  
-SQUARE_SIZE_MM = 16.5           # Real physical size of a square (Aggiorna con la tua misura esatta!)
+SQUARE_SIZE_MM = 16.6           # Real physical size of a square (Aggiorna con la tua misura esatta!)
 SQUARE_SIZE_M = SQUARE_SIZE_MM / 1000.0
 
 # --- ALGORITHM TUNING ---

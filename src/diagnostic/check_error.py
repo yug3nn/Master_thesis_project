@@ -9,7 +9,7 @@ import sys
 # Add the current working directory (project root) to sys.path for custom modules
 sys.path.append(os.getcwd())
 from src.utils.logger_setup import setup_logging
-from src.utils.settings import DATA_FOLDER, SQUARE_SIZE_M
+from src.utils.settings import DATA_FOLDER, SQUARE_SIZE_MM
 
 def get_latest_json():
     """Retrieves the latest raw dataset to extract image points."""
@@ -72,7 +72,7 @@ def generate_validation_plots(logger):
         
         # Auto-Detect array orientation to prevent diagonal distance calculation
         grid_test = pts3D.reshape(bh, bw, 3)
-        if np.linalg.norm(grid_test[0,0] - grid_test[1,0]) > 0.030: 
+        if np.linalg.norm(grid_test[0,0] - grid_test[1,0]) > SQUARE_SIZE_MM * 1.5:
             grid3D = pts3D.reshape(bw, bh, 3)
             gridImg = img_pts_L[i].reshape(bw, bh, 2)
             rows, cols = bw, bh
@@ -86,14 +86,14 @@ def generate_validation_plots(logger):
             for c in range(cols):
                 if c < cols - 1: # Horizontal edge
                     dist = np.linalg.norm(grid3D[r, c] - grid3D[r, c+1])
-                    errors.append(abs(dist - SQUARE_SIZE_M))
+                    errors.append(abs(dist - SQUARE_SIZE_MM))
                     positions.append((gridImg[r, c] + gridImg[r, c+1]) / 2)
                 if r < rows - 1: # Vertical edge
                     dist = np.linalg.norm(grid3D[r, c] - grid3D[r+1, c])
-                    errors.append(abs(dist - SQUARE_SIZE_M))
+                    errors.append(abs(dist - SQUARE_SIZE_MM))
                     positions.append((gridImg[r, c] + gridImg[r+1, c]) / 2)
 
-    errors_mm = np.array(errors) * 1000
+    errors_mm = np.array(errors)
     positions = np.array(positions)
 
     # --- STATISTICS ---

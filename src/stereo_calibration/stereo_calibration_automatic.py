@@ -149,8 +149,8 @@ def main():
                 im_R[data_R[0]['y'], data_R[0]['x']] = 255
                 
                 if time.time() - last_cap >= COOLDOWN_SECONDS:
-                    proc_L = cv2.bitwise_not(cv2.dilate(im_L, np.ones((3,3))))
-                    proc_R = cv2.bitwise_not(cv2.dilate(im_R, np.ones((3,3))))
+                    proc_L = cv2.bitwise_not(cv2.morphologyEx(im_L, cv2.MORPH_CLOSE, np.ones((3,3))))
+                    proc_R = cv2.bitwise_not(cv2.morphologyEx(im_R, cv2.MORPH_CLOSE, np.ones((3,3))))
 
                     ret_L, corners_L = cv2.findChessboardCornersSB(proc_L, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), FLAGS_STEREO)
                     ret_R, corners_R = cv2.findChessboardCornersSB(proc_R, (CHECKERBOARD_ROWS, CHECKERBOARD_COLS), FLAGS_STEREO)

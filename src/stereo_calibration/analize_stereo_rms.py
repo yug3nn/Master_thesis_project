@@ -50,6 +50,85 @@ def sort_snaps_by_fps(img_pts_L, img_pts_R):
         
     return sorted_indices
 
+def filter_edge_snaps(img_pts_L, img_pts_R, obj_pts, w, h, margin=15):
+    """
+    Discards snapshots where at least one checkerboard point 
+    is too close to the sensor edges, and returns info about discarded ones.
+    """
+    valid_L, valid_R, valid_obj = [], [], []
+    discarded_info = [] # Stores data for visualization
+    
+    for i, (pL, pR, pObj) in enumerate(zip(img_pts_L, img_pts_R, obj_pts)):
+        pL_2d = pL.reshape(-1, 2)
+        pR_2d = pR.reshape(-1, 2)
+        
+        out_L = np.any(pL_2d[:, 0] < margin) or np.any(pL_2d[:, 0] > w - margin) or \
+                np.any(pL_2d[:, 1] < margin) or np.any(pL_2d[:, 1] > h - margin)
+                
+        out_R = np.any(pR_2d[:, 0] < margin) or np.any(pR_2d[:, 0] > w - margin) or \
+                np.any(pR_2d[:, 1] < margin) or np.any(pR_2d[:, 1] > h - margin)
+                
+        if not (out_L or out_R):
+            valid_L.append(pL)
+            valid_R.append(pR)
+            valid_obj.append(pObj)
+        else:
+            reason = 'LEFT' if out_L and not out_R else ('RIGHT' if out_R and not out_L else 'BOTH')
+            discarded_info.append({
+                'index': i,
+                'pts_L': pL_2d,
+                'pts_R': pR_2d,
+                'reason': reason
+            })
+            
+    return valid_L, valid_R, valid_obj, discarded_info
+
+def visualize_discarded(discarded_info, w, h, margin, output_dir="data_analysis/discarded"):
+    """
+    Generates side-by-side images of the discarded snaps, 
+    drawing the safe-zone margin and highlighting the offending points.
+    """
+    if not discarded_info:
+        return
+        
+    os.makedirs(output_dir, exist_ok=True)
+    
+    for info in discarded_info:
+        idx = info['index']
+        reason = info['reason']
+        
+        # Create blank black images for GenX320 canvas
+        img_L = np.zeros((h, w, 3), dtype=np.uint8)
+        img_R = np.zeros((h, w, 3), dtype=np.uint8)
+        
+        # Draw the safe-zone margin (red rectangle)
+        cv2.rectangle(img_L, (margin, margin), (w - margin, h - margin), (0, 0, 255), 1)
+        cv2.rectangle(img_R, (margin, margin), (w - margin, h - margin), (0, 0, 255), 1)
+        
+        # Helper function to draw points
+        def draw_pts(img, pts):
+            for pt in pts:
+                x, y = int(pt[0]), int(pt[1])
+                # If point is outside margin, draw RED and larger. Otherwise WHITE.
+                if x < margin or x > w - margin or y < margin or y > h - margin:
+                    cv2.circle(img, (x, y), 5, (0, 0, 255), -1) # Red outlier
+                else:
+                    cv2.circle(img, (x, y), 3, (255, 255, 255), -1) # White normal
+                    
+        draw_pts(img_L, info['pts_L'])
+        draw_pts(img_R, info['pts_R'])
+                
+        # Combine Left and Right side-by-side
+        combined = np.hstack((img_L, img_R))
+        
+        # Add a text label
+        cv2.putText(combined, f"Snap {idx:03d} | Cut by: {reason}", (10, 20), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        
+        # Save to disk
+        filepath = os.path.join(output_dir, f"discarded_snap_{idx:03d}.png")
+        cv2.imwrite(filepath, combined)
+
 def evaluate_metric_error(mtxL, distL, mtxR, distR, R, T, all_img_pts_L, all_img_pts_R, bw, bh):
     """
     Calculates the 3D metric error ON THE ENTIRE DATASET.
@@ -79,9 +158,9 @@ def evaluate_metric_error(mtxL, distL, mtxR, distR, R, T, all_img_pts_L, all_img
         for r in range(rows):
             for c in range(cols):
                 if c < cols - 1: # Horizontal edge
-                    raw_distances.append(np.linalg.norm(grid3D[r, c] - grid3D[r, c+1]) * 1000)
+                    raw_distances.append(np.linalg.norm(grid3D[r, c] - grid3D[r, c+1]))
                 if r < rows - 1: # Vertical edge
-                    raw_distances.append(np.linalg.norm(grid3D[r, c] - grid3D[r+1, c]) * 1000)
+                    raw_distances.append(np.linalg.norm(grid3D[r, c] - grid3D[r+1, c]))
     
     raw_distances = np.array(raw_distances)
     errors = np.abs(raw_distances - (SQUARE_SIZE_MM))
@@ -113,6 +192,16 @@ def run_two_step_analysis(logger):
     scale_factor = SQUARE_SIZE_MM / json_square_size
     obj_pts_raw = [pts * scale_factor for pts in obj_pts_raw]
 
+    # --- FILTER AND VISUALIZE OUTLIERS ---
+    margin_px = 10
+    img_pts_L_raw, img_pts_R_raw, obj_pts_raw, discarded_info = filter_edge_snaps(
+        img_pts_L_raw, img_pts_R_raw, obj_pts_raw, w, h, margin=margin_px
+    )
+    logger.info(f"Margin Filter applied: discarded {len(discarded_info)} snaps too close to the edges.")
+    
+    if discarded_info:
+        visualize_discarded(discarded_info, w, h, margin=margin_px)
+        logger.info(f"Visualizations of discarded snaps saved in 'data_analysis/discarded/'.")
     def load_cam(side):
         with open(f"config/camera_{side}.json", 'r') as f:
             d = json.load(f)
@@ -178,7 +267,7 @@ def run_two_step_analysis(logger):
         current_mae, current_median, measured_size = evaluate_metric_error(
             mtx_L, dist_L, mtx_R, dist_R, R, T, all_img_pts_L, all_img_pts_R, bw, bh
         )
-        baseline_mm = np.linalg.norm(T) * 1000
+        baseline_mm = float(np.linalg.norm(T))
         
         results["count"].append(count)
         results["rms_raw"].append(ret_raw)
@@ -192,11 +281,11 @@ def run_two_step_analysis(logger):
         final_params = {
             "R": R.tolist(), "T": T.tolist(), 
             "E": E.tolist(), "F": F.tolist(),
-            "RMS": ret_clean, 
-            "Metric_Median_mm": current_median,
-            "Metric_MAE_mm": current_mae,
-            "n_images_used": count,
-            "n_images_kept": len(f_obj)
+            "RMS": float(ret_clean),                      # <-- Cast a float standard
+            "Metric_Median_mm": float(current_median),    # <-- Cast a float standard
+            "Metric_MAE_mm": float(current_mae),          # <-- Cast a float standard
+            "n_images_used": int(count),                  # <-- Cast a int standard
+            "n_images_kept": int(len(f_obj))              # <-- Cast a int standard
         }
         
         logger.info(f"Snap {count:03d} | Clean RMS: {ret_clean:.4f} px | Global Median Error: {current_median:.4f} mm | Baseline: {baseline_mm:.2f} mm")
@@ -207,7 +296,7 @@ def run_two_step_analysis(logger):
     logger.info(f"Global Median Error: {final_params['Metric_Median_mm']:.4f} mm")
     logger.info(f"Input Snapshots:     {final_params['n_images_used']} (Kept post-filter: {final_params['n_images_kept']})")
     logger.info(f"Reprojection RMS:    {final_params['RMS']:.4f} pixels")
-    logger.info(f"Baseline (T):        {np.linalg.norm(np.array(final_params['T']))*1000:.2f} mm")
+    logger.info(f"Baseline (T):        {np.linalg.norm(np.array(final_params['T'])):.2f} mm")
     logger.info("==================================================")
 
     # Save Configuration

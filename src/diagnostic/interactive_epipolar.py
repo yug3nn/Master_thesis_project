@@ -122,7 +122,10 @@ class EpipolarInteractiveViewer:
         self.update_views()
         
         while True:
-            key = cv2.waitKey(0) & 0xFF
+            # waitKey(10) sblocca il loop ogni 10ms, permettendo a cv2.imshow()
+            # chiamato dal mouse callback di ridisegnare la finestra all'istante!
+            key = cv2.waitKey(10) & 0xFF
+            
             if key == ord('q') or key == 27: # 'q' or ESC
                 break
             elif key == ord('n'): # Next snapshot

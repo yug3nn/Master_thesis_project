@@ -146,12 +146,15 @@ def run_live_mode(logger, maps, img_size):
         while t_L.running and t_R.running:
             try:
                 # The MASTER dictates the loop timing. We wait for its packet first.
-                evs_L = t_L.q.get(timeout=1.0)
+                data_L = t_L.q.get(timeout=1.0)
                 # The SLAVE is retrieved immediately after.
-                evs_R = t_R.q.get(timeout=1.0)
+                data_R = t_R.q.get(timeout=1.0)
             except Empty:
                 # Timeout occurred, loop again or check for errors
                 continue
+
+            ts_L = data_L[1]
+            ts_R = data_R[1]
 
             # --- ACTIVE ALIGNMENT ---
             while abs(ts_L - ts_R) > MAX_SYNC_DIFF_US:
@@ -172,14 +175,14 @@ def run_live_mode(logger, maps, img_size):
             if abs(ts_L - ts_R) <= MAX_SYNC_DIFF_US:
                 # Render Left Frame
                 frame_L = np.zeros((h, w), dtype=np.uint8)
-                if evs_L.size > 0: 
-                    frame_L[evs_L['y'], evs_L['x']] = 255
+                if data_L[0].size > 0: 
+                    frame_L[data_L[0]['y'], data_L[0]['x']] = 255
                 frame_L = cv2.cvtColor(frame_L, cv2.COLOR_GRAY2BGR)
                 
                 # Render Right Frame
                 frame_R = np.zeros((h, w), dtype=np.uint8)
-                if evs_R.size > 0: 
-                    frame_R[evs_R['y'], evs_R['x']] = 255
+                if data_R[0].size > 0: 
+                    frame_R[data_R[0]['y'], data_R[0]['x']] = 255
                 frame_R = cv2.cvtColor(frame_R, cv2.COLOR_GRAY2BGR)
 
                 # Apply Geometric Remapping (Undistortion + Epipolar Alignment)

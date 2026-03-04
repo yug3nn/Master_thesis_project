@@ -6,7 +6,10 @@ import sys
 from queue import Empty
 import time
 import datetime
+import argparse
+import glob
 import matplotlib
+# If you want the plot to open on screen (as well as being saved), comment the line below:
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
@@ -57,12 +60,17 @@ def process_3d_measurement(frame_L, frame_R, calib_params, logger):
     pL_u = cv2.undistortPoints(cornersL, mtxL, distL)
     pR_u = cv2.undistortPoints(cornersR, mtxR, distR)
     
-    pts4D = cv2.triangulatePoints(P1, P2, pL_u, pR_u)
+    # --- FIX OPENCV BUG: TRANSPOSE ARRAYS ---
+    pL_u_T = pL_u.reshape(-1, 2).T
+    pR_u_T = pR_u.reshape(-1, 2).T
+    
+    pts4D = cv2.triangulatePoints(P1, P2, pL_u_T, pR_u_T)
+    # 3D points are implicitly in MILLIMETERS based on baseline T
     pts3D = (pts4D[:3, :] / pts4D[3, :]).T
     
     # Auto-Detect array orientation (Bug fix for diagonal calculation)
     grid_test = pts3D.reshape(CHECKERBOARD_ROWS, CHECKERBOARD_COLS, 3)
-    if np.linalg.norm(grid_test[0,0] - grid_test[1,0]) > 0.030: 
+    if np.linalg.norm(grid_test[0,0] - grid_test[1,0]) > (SQUARE_SIZE_MM * 1.5): 
         grid3D = pts3D.reshape(CHECKERBOARD_COLS, CHECKERBOARD_ROWS, 3)
         rows, cols = CHECKERBOARD_COLS, CHECKERBOARD_ROWS
     else:
@@ -70,7 +78,7 @@ def process_3d_measurement(frame_L, frame_R, calib_params, logger):
         rows, cols = CHECKERBOARD_ROWS, CHECKERBOARD_COLS
     
     # 3. Calculate Depth (Z-axis)
-    z_values = pts3D[:, 2] * 1000  # Convert to mm
+    z_values = pts3D[:, 2] 
     mean_z = float(np.mean(z_values))
     std_z = float(np.std(z_values))
     
@@ -79,9 +87,9 @@ def process_3d_measurement(frame_L, frame_R, calib_params, logger):
     for r in range(rows):
         for c in range(cols):
             if c < cols - 1: # Horizontal
-                measured_distances.append(np.linalg.norm(grid3D[r, c] - grid3D[r, c+1]) * 1000)
+                measured_distances.append(np.linalg.norm(grid3D[r, c] - grid3D[r, c+1]))
             if r < rows - 1: # Vertical
-                measured_distances.append(np.linalg.norm(grid3D[r, c] - grid3D[r+1, c]) * 1000)
+                measured_distances.append(np.linalg.norm(grid3D[r, c] - grid3D[r+1, c]))
                 
     mean_sq_size = float(np.mean(measured_distances))
     sq_error = float(abs(mean_sq_size - SQUARE_SIZE_MM))
@@ -139,17 +147,46 @@ def generate_validation_plots(measurements, logger):
     plot_path = os.path.join(DATA_FOLDER, "depth_validation_plots.png")
     plt.savefig(plot_path)
     logger.info(f"Validation plots saved to: {plot_path}")
+    
+    # Note: with matplotlib.use('Agg') active, plt.show() will not open any GUI window
     plt.show()
 
 def main():
+    parser = argparse.ArgumentParser(description="Stereo 3D Measurement Validation")
+    parser.add_argument('--replot', nargs='?', const='latest', type=str, 
+                        help="Regenerate the plot using an existing JSON. Use '--replot' for the latest, or '--replot filename.json' for a specific file.")
+    args = parser.parse_args()
+
     logger = setup_logging("validate_3d", "stereo")
-    calib_params = load_calibration(logger)
     os.makedirs(DATA_FOLDER, exist_ok=True)
     
+    # --- REPLOT MODE (OFFLINE) ---
+    if args.replot:
+        if args.replot == 'latest':
+            list_of_files = glob.glob(os.path.join(DATA_FOLDER, 'depth_validation_*.json'))
+            if not list_of_files:
+                logger.error("No 'depth_validation' JSON files found in the data folder.")
+                sys.exit(1)
+            json_path = max(list_of_files, key=os.path.getctime)
+        else:
+            json_path = args.replot
+            
+        logger.info(f"Re-plotting mode activated. Loading data from: {json_path}")
+        try:
+            with open(json_path, 'r') as f:
+                measurements = json.load(f)
+            generate_validation_plots(measurements, logger)
+        except Exception as e:
+            logger.error(f"Error while loading file or generating plot: {e}")
+            
+        sys.exit(0) # Exits without initializing the hardware cameras
+    
+    
+    # --- NORMAL MODE (ACQUISITION) ---
+    calib_params = load_calibration(logger)
     measurements = []
     capture_requested = False
     
-    # --- 1. INITIALIZE CENTRALIZED THREADS ---
     logger.info("Starting hardware streams via CameraStreamer...")
     t_L = EventReaderThread(SERIAL_LEFT, STEREO_DELTA_T, role="SLAVE_LEFT", logger=logger, 
                             bias_increment=BIAS_INCREMENT_STEREO, filter_polarity=1)
@@ -200,8 +237,8 @@ def main():
                     frame_R[data_R[0]['y'], data_R[0]['x']] = 255
 
                 # Optional: dilation to help corner detection on event images
-                proc_L = cv2.bitwise_not(cv2.dilate(frame_L, np.ones((3,3))))
-                proc_R = cv2.bitwise_not(cv2.dilate(frame_R, np.ones((3,3))))
+                proc_L = cv2.bitwise_not(cv2.morphologyEx(frame_L, cv2.MORPH_CLOSE, np.ones((3,3))))
+                proc_R = cv2.bitwise_not(cv2.morphologyEx(frame_R, cv2.MORPH_CLOSE, np.ones((3,3))))
 
                 view = cv2.hconcat([frame_L, frame_R])
                 sync_diff = abs(ts_L - ts_R)
