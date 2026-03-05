@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Optical Flow Ground Truth</title>
+    <style>
+        /* CSS resets for a pure full-screen black canvas */
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #000000; font-family: Arial, sans-serif; user-select: none; }
+        canvas { display: block; }
+        
+        /* Control Panel Styling */
+        #ui-panel {
+            position: absolute; top: 15px; left: 15px;
+            background: rgba(30, 30, 30, 0.85); border: 1px solid #555; border-radius: 8px;
+            padding: 15px; color: #fff; z-index: 10; width: 300px;
+            transition: opacity 0.3s;
+        }
+        .hidden { opacity: 0; pointer-events: none; }
+        .control-group { margin-bottom: 12px; }
+        label { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 4px; }
+        input[type="range"] { width: 100%; }
+        button { 
+            width: 100%; padding: 10px; background: #4CAF50; color: white; 
+            border: none; border-radius: 4px; cursor: pointer; font-weight: bold; margin-top: 10px;
+        }
+        button:hover { background: #45a049; }
+        #instructions { font-size: 12px; color: #aaa; margin-top: 10px; text-align: center; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-panel">
+        <h3 style="margin-top: 0; border-bottom: 1px solid #555; padding-bottom: 10px;">Simulation Controls</h3>
+        
+        <div class="control-group">
+            <label><span>Particle Count</span> <span id="val-count">100</span></label>
+            <input type="range" id="param-count" min="1" max="1000" value="100">
+        </div>
+        
+        <div class="control-group">
+            <label><span>Base Speed (px/frame)</span> <span id="val-speed">2.0</span></label>
+            <input type="range" id="param-speed" min="0" max="20" step="0.1" value="2.0">
+        </div>
+        
+        <div class="control-group">
+            <label><span>Flow Angle (Degrees)</span> <span id="val-angle">45</span></label>
+            <input type="range" id="param-angle" min="0" max="360" value="45">
+        </div>
+
+        <div class="control-group">
+            <label><span>Particle Radius (px)</span> <span id="val-radius">5</span></label>
+            <input type="range" id="param-radius" min="1" max="30" value="5">
+        </div>
+
+        <div class="control-group">
+            <label style="justify-content: flex-start; gap: 10px;">
+                <input type="checkbox" id="param-randomize" style="width:auto;">
+                Randomize Directions (Brownian)
+            </label>
+        </div>
+
+        <button id="btn-hide">Hide Controls (Start Sync)</button>
+        <div id="instructions">Tap anywhere on the black screen to show controls again.</div>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const uiPanel = document.getElementById('ui-panel');
+        
+        // UI Elements
+        const elCount = document.getElementById('param-count');
+        const elSpeed = document.getElementById('param-speed');
+        const elAngle = document.getElementById('param-angle');
+        const elRadius = document.getElementById('param-radius');
+        const elRandomize = document.getElementById('param-randomize');
+        const btnHide = document.getElementById('btn-hide');
+
+        // State variables
+        let particles = [];
+        let width, height;
+
+        // Resize canvas to fill the screen
+        function resize() {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // Particle Class
+        class Particle {
+            constructor() {
+                this.resetPosition();
+                this.assignVelocity();
+            }
+
+            resetPosition() {
+                this.x = Math.random() * width;
+                this.y = Math.random() * height;
+            }
+
+            assignVelocity() {
+                const speed = parseFloat(elSpeed.value);
+                if (elRandomize.checked) {
+                    const randomAngle = Math.random() * Math.PI * 2;
+                    this.vx = Math.cos(randomAngle) * speed;
+                    this.vy = Math.sin(randomAngle) * speed;
+                } else {
+                    const angleRad = parseFloat(elAngle.value) * (Math.PI / 180);
+                    this.vx = Math.cos(angleRad) * speed;
+                    this.vy = Math.sin(angleRad) * speed;
+                }
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+
+                // Screen wrapping (continuous flow illusion)
+                if (this.x > width + 20) this.x = -20;
+                else if (this.x < -20) this.x = width + 20;
+                
+                if (this.y > height + 20) this.y = -20;
+                else if (this.y < -20) this.y = height + 20;
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, parseFloat(elRadius.value), 0, Math.PI * 2);
+                ctx.fillStyle = '#FFFFFF';
+                ctx.fill();
+            }
+        }
+
+        // Initialize particle array
+        function initParticles() {
+            const targetCount = parseInt(elCount.value);
+            particles = [];
+            for (let i = 0; i < targetCount; i++) {
+                particles.push(new Particle());
+            }
+        }
+
+        // Update velocities when parameters change
+        function updateVelocities() {
+            particles.forEach(p => p.assignVelocity());
+        }
+
+        // --- Event Listeners for UI ---
+        elCount.addEventListener('input', (e) => {
+            document.getElementById('val-count').innerText = e.target.value;
+            initParticles();
+        });
+        
+        elSpeed.addEventListener('input', (e) => {
+            document.getElementById('val-speed').innerText = e.target.value;
+            updateVelocities();
+        });
+
+        elAngle.addEventListener('input', (e) => {
+            document.getElementById('val-angle').innerText = e.target.value;
+            updateVelocities();
+        });
+
+        elRadius.addEventListener('input', (e) => {
+            document.getElementById('val-radius').innerText = e.target.value;
+        });
+
+        elRandomize.addEventListener('change', updateVelocities);
+
+        // Hide/Show UI Logic
+        btnHide.addEventListener('click', (e) => {
+            e.stopPropagation(); // Prevent immediate triggering of the canvas click
+            uiPanel.classList.add('hidden');
+        });
+
+        canvas.addEventListener('click', () => {
+            uiPanel.classList.remove('hidden');
+        });
+
+        // Main Animation Loop
+        function animate() {
+            // Clear screen with pure black
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(0, 0, width, height);
+
+            // Update and draw all particles
+            particles.forEach(p => {
+                p.update();
+                p.draw();
+            });
+
+            requestAnimationFrame(animate);
+        }
+
+        // Start
+        initParticles();
+        animate();
+    </script>
+</body>
+</html>

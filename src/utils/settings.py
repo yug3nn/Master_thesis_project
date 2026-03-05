@@ -32,6 +32,9 @@ BIAS_INCREMENT_STEREO = 10      #
 BIAS_INCREMENT_TRACKER = 10     #
 FLAGS = cv2.CALIB_FIX_K3        # Calibration flag to fix the K3 distortion coefficient
 FLAGS_STEREO = cv2.CALIB_CB_EXHAUSTIVE | cv2.CALIB_CB_ACCURACY | cv2.CALIB_CB_NORMALIZE_IMAGE
+MAX_TRACK_DISTANCE = 0.02       # Max allowed distance (in meters) a particle can move between frames
+MAX_AGE = 3                     # Frames to keep a track alive if temporarily lost
+MIN_PARTICLE_AREA = 5           # Minimum pixels to consider a cluster as a valid particle
 
 # --- DIRECTORIES ---
 DATA_FOLDER = "data_analysis"   #
