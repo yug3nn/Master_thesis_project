@@ -16,7 +16,6 @@ from src.utils.logger_setup import setup_logging
 from src.utils.settings import RECORD_FOLDER, DATA_FOLDER
 
 # The tracker now saves to the same folder as the raw files. 
-# We'll check both DATA_FOLDER and RECORD_FOLDER just in case.
 SEARCH_FOLDERS = [DATA_FOLDER, RECORD_FOLDER]
 
 def get_latest_csv(logger):
@@ -41,49 +40,57 @@ def plot_analysis(csv_file, logger, min_track_length=5):
         logger.error(f"Failed to read CSV: {e}")
         return
 
-    # Basic data validation
     if df.empty:
         logger.warning("The CSV file is empty. No particles were tracked.")
         return
 
-    # Setup the figure
-    fig = plt.figure(figsize=(16, 7))
+    # Setup the figure (2x2 grid)
+    fig = plt.figure(figsize=(16, 12))
 
     # --- 1. 3D TRAJECTORIES PLOT ---
-    ax1 = fig.add_subplot(1, 2, 1, projection='3d')
+    ax1 = fig.add_subplot(2, 2, 1, projection='3d')
     tracked_count = 0
 
-    # Get unique particle IDs
+    # Lists to collect data for the Vector Field
+    vf_x, vf_y, vf_u, vf_v = [], [], [], []
+
     unique_ids = df['particle_id'].unique()
     
     for p_id in unique_ids:
-        p_data = df[df['particle_id'] == p_id]
+        # Sort by timestamp to ensure correct chronological order
+        p_data = df[df['particle_id'] == p_id].sort_values('timestamp_us')
         
-        # Filter out "ghost" particles that only appeared for a few frames
         if len(p_data) >= min_track_length:
-            # OpenCV coordinates: X is right, Y is down, Z is forward (depth)
-            # For 3D plotting, mapping Z to depth, X to width, and Y to height (inverted)
             x = p_data['x_m'].values
             z = p_data['z_m'].values 
-            y = -p_data['y_m'].values # Negative to make 'up' visually correct
+            y = -p_data['y_m'].values # Invert Y for visual consistency
             
+            # Plot 3D line
             ax1.plot(x, z, y, alpha=0.8, linewidth=1.5)
-            # Add a small dot at the end of the trajectory to show direction
             ax1.scatter(x[-1], z[-1], y[-1], s=10, c='red') 
             tracked_count += 1
-    
+            
+            # Calculate overall 2D velocity vector for this specific track
+            dt_sec = (p_data['timestamp_us'].iloc[-1] - p_data['timestamp_us'].iloc[0]) / 1e6
+            if dt_sec > 0:
+                dx = p_data['x_m'].iloc[-1] - p_data['x_m'].iloc[0]
+                dy = -p_data['y_m'].iloc[-1] - (-p_data['y_m'].iloc[0])
+                
+                vf_x.append(p_data['x_m'].iloc[0])
+                vf_y.append(-p_data['y_m'].iloc[0])
+                vf_u.append(dx / dt_sec)
+                vf_v.append(dy / dt_sec)
+            
     ax1.set_title(f"3D Particle Paths (Filtered: >{min_track_length} frames)")
     ax1.set_xlabel("X - Horizontal (m)")
     ax1.set_ylabel("Z - Depth (m)")
     ax1.set_zlabel("Y - Vertical (m)")
     
-    logger.info(f"Visualized {tracked_count} stable trajectories out of {len(unique_ids)} total IDs.")
+    logger.info(f"Visualized {tracked_count} stable trajectories.")
 
     # --- 2. VELOCITY HISTOGRAM ---
-    ax2 = fig.add_subplot(1, 2, 2)
-    
-    # Filter out absolute zero velocities (mostly newly spawned particles)
-    valid_velocities = df[df['vel_mps'] > 0.001]['vel_mps']
+    ax2 = fig.add_subplot(2, 2, 2)
+    valid_velocities = df[(df['vel_mps'] > 0.001) & (df['vel_mps'] < 5.0)]['vel_mps']
     
     if not valid_velocities.empty:
         mean_v = valid_velocities.mean()
@@ -98,17 +105,63 @@ def plot_analysis(csv_file, logger, min_track_length=5):
         ax2.set_ylabel("Frequency")
         ax2.legend()
         ax2.grid(True, linestyle='--', alpha=0.6)
-    else:
-        ax2.text(0.5, 0.5, "No valid velocity data", ha='center', va='center')
-        ax2.set_title("Particle Velocity Distribution")
 
-    # --- SAVE PLOT ---
+    # --- 3. 2D VECTOR FIELD (QUIVER) ---
+    ax3 = fig.add_subplot(2, 2, 3)
+    
+    if vf_x:
+        # Calculate speeds for colormapping
+        speeds = np.hypot(vf_u, vf_v)
+        
+        # Plot the vector field
+        q = ax3.quiver(vf_x, vf_y, vf_u, vf_v, speeds, cmap='jet', alpha=0.8, 
+                       angles='xy', scale_units='xy', scale=None)
+        fig.colorbar(q, ax=ax3, label='Speed (m/s)')
+        
+        ax3.set_title("2D Flow Vector Field (X-Y Plane)")
+        ax3.set_xlabel("X - Horizontal (m)")
+        ax3.set_ylabel("Y - Vertical (m)")
+        ax3.grid(True, linestyle='--', alpha=0.6)
+        
+        # --- 4. MEAN GLOBAL FLOW DIRECTION (POLAR) ---
+        ax4 = fig.add_subplot(2, 2, 4, projection='polar')
+        
+        mean_u = np.mean(vf_u)
+        mean_v = np.mean(vf_v)
+        mean_speed = np.hypot(mean_u, mean_v)
+        mean_angle = np.arctan2(mean_v, mean_u)
+        
+        # Draw the big mean direction arrow
+        ax4.annotate('', xy=(mean_angle, mean_speed), xytext=(0, 0),
+                     arrowprops=dict(facecolor='red', edgecolor='darkred', width=5, headwidth=15))
+        
+        # Configure the polar plot to look like a compass
+        ax4.set_title("Mean Global Flow Direction")
+        ax4.set_theta_zero_location('E') # 0 degrees is standard X-axis right
+        ax4.set_theta_direction(1) # Counter-clockwise
+        ax4.set_rmax(mean_speed * 1.5 if mean_speed > 0 else 1)
+        ax4.set_rticks([mean_speed]) 
+        ax4.set_rlabel_position(-22.5) 
+        
+        # Add a text label showing the exact angle and magnitude
+        deg = np.degrees(mean_angle) % 360
+        ax4.text(mean_angle, mean_speed * 1.7, f"{deg:.1f}°\n({mean_speed:.2f} m/s)", 
+                 horizontalalignment='center', verticalalignment='center', 
+                 weight='bold', color='red', fontsize=12)
+    else:
+        ax3.text(0.5, 0.5, "No vector data", ha='center', va='center')
+        ax3.set_title("2D Flow Vector Field")
+        
+        ax4 = fig.add_subplot(2, 2, 4)
+        ax4.text(0.5, 0.5, "No direction data", ha='center', va='center')
+        ax4.set_title("Mean Global Flow Direction")
+
+    # --- SAVE AND SHOW PLOT ---
     plt.tight_layout()
     output_img = csv_file.replace('.csv', '_analysis.png')
     plt.savefig(output_img, dpi=150)
     logger.info(f"Analysis plot successfully saved to: {output_img}")
 
-    # --- SHOW PLOT INTERACTIVELY ---
     logger.info("Opening interactive 3D plot. Close the window to exit.")
     plt.show()
 
@@ -117,10 +170,9 @@ def main():
     
     parser = argparse.ArgumentParser(description="Visualize 3D Particle Flow from CSV")
     parser.add_argument('--csv', type=str, help="Path to the specific _tracked.csv file to analyze.")
-    parser.add_argument('--min-frames', type=int, default=5, help="Minimum track length to display (filters noise).")
+    parser.add_argument('--min-frames', type=int, default=5, help="Minimum track length to display.")
     args = parser.parse_args()
 
-    # Determine input file
     if args.csv:
         target_csv = args.csv
     else:

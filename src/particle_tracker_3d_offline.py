@@ -17,16 +17,12 @@ from src.utils.settings import (
 )
 
 class KalmanTrack:
-    """A linear Kalman Filter to track a single 3D particle in noisy fluid environments."""
+    """A linear Kalman Filter with Lifecycle Management (Tentative -> Confirmed)."""
     def __init__(self, track_id, initial_pos, dt_sec):
         self.id = track_id
         self.dt_sec = dt_sec
         
-        # State: [x, y, z, vx, vy, vz]
-        # Measurement: [x, y, z]
         self.kf = cv2.KalmanFilter(6, 3)
-        
-        # Transition Matrix (A): Position updates based on velocity * dt
         self.kf.transitionMatrix = np.array([
             [1, 0, 0, dt_sec, 0, 0],
             [0, 1, 0, 0, dt_sec, 0],
@@ -46,10 +42,17 @@ class KalmanTrack:
         self.kf.statePost = np.zeros((6, 1), np.float32)
         self.kf.statePost[:3, 0] = initial_pos
         
-        # Kalman tuning for water/outdoor environments
-        # Moderate process noise (particles can change direction)
-        self.kf.processNoiseCov = np.eye(6, dtype=np.float32) * 1e-2
-        # Moderate measurement noise (filters out sun reflections and splash artifacts)
+        # Free 3D Tracking Process Noise
+        self.kf.processNoiseCov = np.array([
+            [1e-3, 0, 0, 0, 0, 0], 
+            [0, 1e-3, 0, 0, 0, 0], 
+            [0, 0, 1e-3, 0, 0, 0], 
+            [0, 0, 0, 1e-2, 0, 0], 
+            [0, 0, 0, 0, 1e-2, 0], 
+            [0, 0, 0, 0, 0, 1e-2]  
+        ], dtype=np.float32)
+        
+        # Measurement Noise (Trust X/Y, tolerate Z quantization noise)
         self.kf.measurementNoiseCov = np.array([
             [1e-3, 0.0, 0.0],
             [0.0, 1e-3, 0.0],
@@ -57,12 +60,12 @@ class KalmanTrack:
         ], dtype=np.float32)
         self.kf.errorCovPost = np.eye(6, dtype=np.float32) * 1.0
         
+        # --- LIFECYCLE MANAGEMENT ---
+        self.status = "TENTATIVE" # Starts as a candidate
         self.age = 0             
         self.hits = 1            
         self.pos = initial_pos   
         self.vel_norm = 0.0      
-        
-        # Bootstrap flag to prevent the "zero-velocity delay"
         self.is_initialized = False 
 
     def predict(self):
@@ -72,7 +75,7 @@ class KalmanTrack:
     def update(self, measurement):
         meas_arr = np.array(measurement, dtype=np.float32).reshape(3, 1)
         
-        # BOOTSTRAP: Inject physical velocity on the first valid movement
+        # Bootstrap velocity on the first valid move
         if not self.is_initialized:
             vx = (measurement[0] - self.pos[0]) / self.dt_sec
             vy = (measurement[1] - self.pos[1]) / self.dt_sec
@@ -90,6 +93,11 @@ class KalmanTrack:
         
         self.age = 0
         self.hits += 1
+        
+        # Promote candidate to Confirmed after 3 consistent frames
+        if self.status == "TENTATIVE" and self.hits >= 3:
+            self.status = "CONFIRMED"
+
 
 class ParticleTracker:
     def __init__(self, csv_file, logger):
@@ -115,24 +123,23 @@ class ParticleTracker:
         for tid, pred_pos in predictions.items():
             best_det_idx = None
             
-            # Dynamic tolerance: Huge radius on birth, strict radius once tracking
-            if self.tracks[tid].is_initialized:
-                min_dist = 0.05 # 5 cm max jump for stable particles
-            else:
-                min_dist = 0.30 # 30 cm allowance for the very first frame
+            # --- STRICT PHYSICAL LIMITS ---
+            # Max allowed deviation from the Kalman prediction is 5 cm.
+            # This completely eliminates "teleportation" wrapping across the screen.
+            max_search_radius = 0.05 
             
             for i, det_pos in enumerate(unmatched_detections):
-                dist = np.linalg.norm(pred_pos - det_pos)
-                if dist < min_dist:
-                    min_dist = dist
+                dist_3d = np.linalg.norm(pred_pos - det_pos)
+                if dist_3d < max_search_radius:
+                    max_search_radius = dist_3d
                     best_det_idx = i
                     
             if best_det_idx is not None:
                 meas_pos = unmatched_detections.pop(best_det_idx)
                 self.tracks[tid].update(meas_pos)
                 
-                # We only save velocities and data after initialization to avoid 0 m/s spikes
-                if self.tracks[tid].is_initialized:
+                # Only log data for CONFIRMED tracks
+                if self.tracks[tid].status == "CONFIRMED":
                     frame_velocities.append(self.tracks[tid].vel_norm)
                     pos = self.tracks[tid].pos
                     with open(self.csv_file, mode='a', newline='') as f:
@@ -141,14 +148,26 @@ class ParticleTracker:
             else:
                 self.tracks[tid].age += 1
                 
+        # Spawn new candidates from unmatched detections
         for det_pos in unmatched_detections:
             self.tracks[self.next_id] = KalmanTrack(self.next_id, det_pos, dt_sec)
             self.next_id += 1
             
-        self.tracks = {tid: t for tid, t in self.tracks.items() if t.age <= MAX_AGE}
+        # --- TRACK DEATH LOGIC ---
+        alive_tracks = {}
+        for tid, t in self.tracks.items():
+            if t.status == "TENTATIVE" and t.age > 0:
+                # Kill weak candidates instantly if they miss a single frame
+                continue
+            elif t.status == "CONFIRMED" and t.age > MAX_AGE:
+                # Give confirmed tracks a grace period to recover from occlusions
+                continue
+            else:
+                alive_tracks[tid] = t
+                
+        self.tracks = alive_tracks
         
         return self.tracks, np.mean(frame_velocities) if frame_velocities else 0
-
 
 def load_stereo_config(logger):
     try:
@@ -221,7 +240,7 @@ def main():
     logger.info("Starting synchronized processing loop. Press 'q' to abort.")
     
     # Kernel adjusted to ensure large fast particles are solid blobs, not empty rings
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 
     try:
         ev_L = next(iter_L)
@@ -292,7 +311,7 @@ def main():
         # We draw on the RECTIFIED image, so the math perfectly matches the screen
         vis = cv2.cvtColor(im_L_rect, cv2.COLOR_GRAY2BGR) 
         for tid, t in tracks.items():
-            if t.hits > 1: 
+            if t.status == "CONFIRMED": 
                 # Re-project 3D point (meters) directly back to pixels using the camera matrix
                 cx = int((t.pos[0] / t.pos[2]) * focal + P1[0, 2])
                 cy = int((t.pos[1] / t.pos[2]) * focal + P1[1, 2])
