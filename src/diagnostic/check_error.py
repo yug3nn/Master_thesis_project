@@ -1,6 +1,9 @@
 import json
 import numpy as np
 import cv2
+import matplotlib
+# Use 'TkAgg' for interactive GUI display (crucial for VNC and 3D rotation)
+matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import os
 import glob

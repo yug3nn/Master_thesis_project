@@ -209,11 +209,11 @@ def main():
         logger.info("Keyboard interrupt (Ctrl+C) detected.")
     finally:
         print("\n[CMD] Stop signal received. Shutting down...")
-        t_L.stop()
         t_R.stop()
+        t_L.stop()
         
-        t_L.join()
         t_R.join()
+        t_L.join()
         
         cv2.destroyAllWindows()
         logger.info("Shutdown complete.")

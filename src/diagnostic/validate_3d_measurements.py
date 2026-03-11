@@ -9,8 +9,8 @@ import datetime
 import argparse
 import glob
 import matplotlib
-# If you want the plot to open on screen (as well as being saved), comment the line below:
-matplotlib.use('Agg')
+# Use 'TkAgg' for interactive GUI display (crucial for VNC and 3D rotation)
+matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 
 # Add the project root to sys.path
