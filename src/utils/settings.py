@@ -13,7 +13,7 @@ IMG_WIDTH = 320
 IMG_HEIGHT = 320
 DELTA_T = 20000                  # Accumulation window in microseconds
 STEREO_DELTA_T = 30000           # Accumulation window in microseconds for stereo system
-TRACKER_DELTA_T = 10000          # Accumulation window in microseconds for tracking
+TRACKER_DELTA_T = 20000          # Accumulation window in microseconds for tracking
 
 # --- CALIBRATION BOARD ---
 CHECKERBOARD_ROWS = 6     

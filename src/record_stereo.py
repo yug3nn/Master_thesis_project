@@ -36,11 +36,11 @@ def main():
 
     # Pass the raw_file_path directly to the threads!
     t_L = EventReaderThread(SERIAL_LEFT, TRACKER_DELTA_T, role="SLAVE_LEFT", logger=logger, 
-                            bias_increment=BIAS_INCREMENT_TRACKER, filter_polarity=1,
+                            bias_increment=BIAS_INCREMENT_TRACKER, filter_polarity=None,
                             raw_file_path=file_L)
                             
     t_R = EventReaderThread(SERIAL_RIGHT, TRACKER_DELTA_T, role="MASTER_RIGHT", logger=logger, 
-                            bias_increment=BIAS_INCREMENT_TRACKER, filter_polarity=1,
+                            bias_increment=BIAS_INCREMENT_TRACKER, filter_polarity=None,
                             raw_file_path=file_R)
 
     t_L.start()
