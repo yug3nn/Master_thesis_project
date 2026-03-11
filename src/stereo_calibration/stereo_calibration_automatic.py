@@ -128,15 +128,15 @@ def main():
 
             # --- ACTIVE ALIGNMENT ---
             while abs(ts_L - ts_R) > MAX_SYNC_DIFF_US:
-                logger.info(f"Syncing... Offset: {ts_L - ts_R}us")
+                #logger.info(f"Syncing... Offset: {ts_L - ts_R}us")
                 if ts_L < ts_R:
-                    logger.debug(f"Flushing Left... diff: {ts_L - ts_R}")
+                    #logger.debug(f"Flushing Left... diff: {ts_L - ts_R}")
                     try:
                         data_L = t_L.q.get(timeout=0.01)
                         ts_L = data_L[1]
                     except Empty: break 
                 else:
-                    logger.debug(f"Flushing Right... diff: {ts_L - ts_R}")
+                    #logger.debug(f"Flushing Right... diff: {ts_L - ts_R}")
                     try:
                         data_R = t_R.q.get(timeout=0.01)
                         ts_R = data_R[1]
@@ -185,6 +185,8 @@ def main():
     except KeyboardInterrupt:
         logger.info("Process interrupted by user.")
     finally:
+        if valid_snaps >= MIN_REQUIRED_SNAPS:
+            save_points_json(objpoints, imgpoints_L, imgpoints_R, width, height, logger)
         # Safely shut down the hardware threads
         logger.info("Shutting down sensor threads...")
         t_R.stop()
@@ -196,7 +198,6 @@ def main():
 
     # Final calibration logic
     if valid_snaps >= MIN_REQUIRED_SNAPS:
-        save_points_json(objpoints, imgpoints_L, imgpoints_R, width, height, logger)
         if args.mode == "calibrate":
             logger.info("Starting stereo calibration with outlier rejection...")
             
