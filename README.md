@@ -35,7 +35,7 @@ To ensure metric accuracy, the system was tested against known ground truth dist
 ## 3. Spatial Error Distribution
 We mapped the 3D reconstruction error across the sensor's Field of View (FOV) to detect any localized distortion.
 
-![Error Heatmap](docs/final_reconstruction_heatmap.jpg)
+![Error Heatmap](docs/final_reconstruction_heatmap.png)
 
 * **Median Absolute Error:** 0.41 mm.
 * **Mean Error:** 0.65 mm.
@@ -46,7 +46,7 @@ We mapped the 3D reconstruction error across the sensor's Field of View (FOV) to
 ## 4. Particle Tracking & Flow Estimation
 The core of the system is a 3D particle tracker that processes event clusters (blobs) in real-time.
 
-![Flow Estimation](docs/particle_tracker_0.069_m_s_76_degrees.jpg)
+![Flow Estimation](docs/particle_tracker_0.069_m_s_76_degrees.png)
 
 ### Key Features:
 * **DipoleBondManager:** Matches positive and negative event clusters using the Hungarian Algorithm for precise centroid localization.
